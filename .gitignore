@@ -1,0 +1,12 @@
+# BrickTriage — keep secrets and data out of git / the published Pages path.
+
+# Data backups: v6 backups contain the Rebrickable API key + base64 photos.
+# Never commit these (and never let them sit in the GitHub Pages served folder).
+backups/
+*backup*.json
+
+# Key handling
+SECRETS.md
+Secrets.xcconfig
+.env
+.env.*
