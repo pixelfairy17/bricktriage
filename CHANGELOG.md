@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.29.3 — 2026-06-15
+
+- **Root-cause modal fix (the merch-edit bug, and the whole "can't see my screen" class).** Every popup sheet (merch edit, new/edit buy, scan, move-to-MOC, photo/gallery/part-image viewers, MOC editor, import) was rendered **inside** the scrollable `.content` container. On iOS, `position:fixed` is trapped by a scrolling ancestor instead of the viewport — so sheets slid off-screen, the tab bar showed through behind them, and the keyboard hid the field. All modals now render through a **portal to `<body>`** (Preact `createPortal`), escaping `.content` entirely. Combined with the v0.29.2 `visualViewport.offsetTop` tracking, sheets stay put and the focused field stays above the keyboard.
+
+-----
+
 ## v0.29.2 — 2026-06-15
 
 - **Merch edit / all modal sheets — keyboard pushes the sheet off-screen.** When iOS opens the keyboard it shifts the visual viewport down (`offsetTop` > 0), but a `position:fixed` bottom sheet stayed anchored to the layout-viewport top — so the sheet slid up off-screen and the app/tab-bar showed through behind it, with the field you were editing hidden. Modals now track `visualViewport.offsetTop/offsetLeft` (not just height), keeping the sheet aligned to what's actually visible and the focused field above the keyboard.
