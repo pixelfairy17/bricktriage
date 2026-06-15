@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.29.1 — 2026-06-15
+
+- **#8 follow-up — keyboard fix vs. viewport sizer conflict.** The 0.29.0 keyboard fix added a second `visualViewport` handler that fought the existing standalone viewport sizer (`fitApp`) — both set `#app` height to different values on every keyboard event, thrashing the layout and breaking field editing inside sheets (e.g. **merch → Qty**). Consolidated into a single set of handlers: `#app` shrinks to the visible viewport **only while the keyboard is open** (otherwise sized from `window.innerHeight` for the standalone-stale-units case), modal sheets stay pinned above the keyboard, and the focused field scrolls into view app-wide.
+
+-----
+
 ## v0.29.0 — 2026-06-15
 
 UI-bug sweep + backlog from the sorting session.

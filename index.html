@@ -79,8 +79,11 @@ import { get as idbGet, set as idbSet, del as idbDelete, keys as idbKeys, getMan
 const html = htm.bind(h);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.29.0";
+const APP_VERSION = "0.29.1";
 const CHANGELOG = [
+  ["0.29.1", "2026-06-15", [
+    "#8 follow-up: the keyboard fix shipped in 0.29.0 fought the existing standalone viewport sizer (two handlers set the app height to different values on every keyboard event), which broke editing fields in sheets — e.g. merch Qty. Consolidated into one set of handlers: the app shrinks to the visible viewport only while the keyboard is open, modal sheets stay pinned above it, and the focused field scrolls into view everywhere",
+  ]],
   ["0.29.0", "2026-06-15", [
     "#1 Sorting: 🎯 Target set — pick the set you're filling, then every scan/search only matches rows in that set (single match auto-logs +1). Tap the chip to clear and go back to hunting across all sets",
     "#6 Minifigs: sets now fetch their minifigs from Rebrickable — a Minifigs accordion lists each fig with its own collapsible parts inventory (legs/torso/head/hair/accessories), per-fig have/need + Mark all. Tracked separately from the main parts count. Existing sets get a one-tap 'Fetch minifigs' button",
@@ -946,28 +949,6 @@ function App() {
   const addSetFromBuy = id => { setAddFromBuyId(id); setOpenSetNum(null); setAdding(true); setTab("sets"); };
   const backToOriginBuy = () => { setAdding(false); setAddFromBuyId(null); setTab("buys"); }; // openBuyId still set
   const mutateBuys = fn => setBuys(prev => { const next = fn(prev); save("bt:buys", next); return next; });
-
-  // #8 iOS keyboard tracking (app-wide, not just modal sheets): when the soft keyboard opens,
-  // visualViewport shrinks while window.innerHeight does not — so the fixed-height app keeps its
-  // bottom (notes, prices, etc.) hidden behind the keyboard. Shrink #app to the visible viewport
-  // and scroll the focused field into view above the keyboard.
-  useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const app = document.getElementById("app");
-    const apply = () => { app.style.height = Math.round(vv.height) + "px"; };
-    apply();
-    vv.addEventListener("resize", apply);
-    vv.addEventListener("scroll", apply);
-    const onFocus = e => {
-      const el = e.target;
-      if (el && el.matches && el.matches("input, textarea, select"))
-        setTimeout(() => el.scrollIntoView({ block: "center", behavior: "smooth" }), 250);
-    };
-    document.addEventListener("focusin", onFocus);
-    return () => { vv.removeEventListener("resize", apply); vv.removeEventListener("scroll", apply);
-      document.removeEventListener("focusin", onFocus); app.style.height = ""; };
-  }, []);
 
   return html`
     <div class="shell">
@@ -3702,31 +3683,37 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
 }
 
 // Standalone iOS can serve stale CSS viewport units (100%/dvh) — size the app from the
-// real runtime window height instead, and keep it in sync.
+// real runtime height instead. #8: when the soft keyboard opens, visualViewport shrinks
+// while window.innerHeight does NOT, so a field in the main content (notes, merch qty, etc.)
+// stays hidden behind the keyboard. Size #app to the visual viewport whenever the keyboard
+// is open, otherwise to window.innerHeight (the standalone-stale-units fix).
+function vph() { return window.visualViewport ? window.visualViewport.height : window.innerHeight; }
+function kbOpen() { var vv = window.visualViewport; return !!vv && (window.innerHeight - vv.height) > 120; }
 function fitApp() {
-  const a = document.getElementById("app");
-  if (a && window.innerHeight > 0) a.style.height = window.innerHeight + "px";
+  var a = document.getElementById("app");
+  if (!a) return;
+  var h = kbOpen() ? vph() : (window.innerHeight || vph());
+  if (h > 0) a.style.height = h + "px";
 }
-addEventListener("resize", fitApp);
-addEventListener("orientationchange", fitApp);
-addEventListener("pageshow", fitApp);
-window.visualViewport?.addEventListener("resize", fitApp);
-
-// Keyboard handling for modal sheets (iOS): when the keyboard opens the visual
-// viewport shrinks — pin open .modal layers to that height so the bottom sheet and
-// its fields stay above the keyboard instead of scrolling out of reach, and bring
-// the focused field into view.
+// Pin open .modal layers (bottom sheets) to the visible viewport too, so their fields
+// stay above the keyboard instead of scrolling out of reach.
 function fitModals() {
-  var h = (window.visualViewport ? window.visualViewport.height : window.innerHeight);
+  var h = vph();
   var ms = document.getElementsByClassName("modal");
   for (var i = 0; i < ms.length; i++) ms[i].style.height = h + "px";
 }
-window.visualViewport?.addEventListener("resize", fitModals);
+function fitAll() { fitApp(); fitModals(); }
+addEventListener("resize", fitApp);
+addEventListener("orientationchange", fitApp);
+addEventListener("pageshow", fitApp);
+window.visualViewport?.addEventListener("resize", fitAll);
+window.visualViewport?.addEventListener("scroll", fitAll);
+// Bring the focused field into view above the keyboard — anywhere in the app, not just sheets.
 addEventListener("focusin", function (e) {
-  if (e.target && e.target.closest && e.target.closest(".sheet")) {
-    fitModals();
-    setTimeout(function () { try { e.target.scrollIntoView({ block: "center" }); } catch (_) {} }, 250);
-  }
+  var t = e.target;
+  if (!t || !t.matches || !t.matches("input, textarea, select")) return;
+  fitAll();
+  setTimeout(function () { try { t.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_) {} }, 250);
 });
 
 (async () => {
