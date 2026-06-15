@@ -54,9 +54,11 @@
   .tabbar button { flex:1; background:none; border:none; padding:14px 0 12px; font-size:13px; font-weight:700; color:var(--dim); }
   .tabbar button.on { color:var(--yellow); }
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:20; display:flex; align-items:flex-end; }
+  /* max-height is capped to the VISIBLE viewport at runtime (fitModals) so a focused field can always
+     scroll above the keyboard; 100% here is the no-JS fallback (bounded by the modal, not 85vh). */
   .sheet { background:var(--bg); border-top:1px solid var(--line); border-radius:18px 18px 0 0;
-    width:100%; max-width:520px; margin:0 auto; max-height:85vh; overflow-y:auto;
-    padding:18px 16px calc(20px + env(safe-area-inset-bottom)); }
+    width:100%; max-width:520px; margin:0 auto; max-height:100%; overflow-y:auto;
+    padding:18px 16px calc(40px + env(safe-area-inset-bottom)); }
   .badge { font-size:11px; font-weight:700; border-radius:999px; padding:1px 7px; }
   a { color:var(--blue); }
 </style>
@@ -83,8 +85,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.29.3";
+const APP_VERSION = "0.29.4";
 const CHANGELOG = [
+  ["0.29.4", "2026-06-15", [
+    "Keyboard, for real this time: the sheet is now capped to the visible strip above the keyboard (was 85vh of the FULL screen, so 'scroll into view' centred the field inside an oversized sheet — i.e. behind the keyboard). Now focusing any field scrolls IT into view above the keyboard and the rest of the form scrolls under it. Re-scrolls a few times as the keyboard animates so it lands right.",
+  ]],
   ["0.29.3", "2026-06-15", [
     "THE modal fix: every popup sheet (merch edit, new/edit buy, scan, move-to-MOC, photo viewers, part image, MOC editor, import) now renders through a portal to <body> instead of inside the scrolling content area. On iOS, position:fixed gets trapped by the scroll container, which is why sheets slid off-screen, showed the tab bar behind them, and the keyboard hid the field. Portalling escapes that entirely — this is the root-cause fix for the merch-edit bug and the whole 'can't see my screen' class.",
   ]],
@@ -3720,6 +3725,10 @@ function fitModals() {
     ms[i].style.top = top + "px";
     ms[i].style.left = left + "px";
     ms[i].style.height = h + "px";
+    // Cap the sheet to the visible strip so a focused field can scroll above the keyboard
+    // (instead of being centred inside an oversized 85vh sheet that runs behind it).
+    var sheet = ms[i].querySelector(".sheet");
+    if (sheet) sheet.style.maxHeight = h + "px";
   }
 }
 function fitAll() { fitApp(); fitModals(); }
@@ -3729,11 +3738,16 @@ addEventListener("pageshow", fitAll);
 window.visualViewport?.addEventListener("resize", fitAll);
 window.visualViewport?.addEventListener("scroll", fitAll);
 // Bring the focused field into view above the keyboard — anywhere in the app, not just sheets.
+// Scroll several times because the keyboard animates in over ~300ms and visualViewport resizes
+// partway through; each pass re-caps the sheet (fitAll) then re-centres the field on what's visible.
+function scrollFieldIntoView(t) {
+  try { t.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_) {}
+}
 addEventListener("focusin", function (e) {
   var t = e.target;
   if (!t || !t.matches || !t.matches("input, textarea, select")) return;
   fitAll();
-  setTimeout(function () { try { t.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_) {} }, 250);
+  [60, 250, 450].forEach(function (d) { setTimeout(function () { fitAll(); scrollFieldIntoView(t); }, d); });
 });
 
 (async () => {

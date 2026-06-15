@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.29.4 — 2026-06-15
+
+- **Keyboard / focused-field visibility (the actual fix).** The sheet's `max-height` was `85vh` of the **full** screen, so when the keyboard was up the sheet was taller than the visible strip and `scrollIntoView` centred the focused field *inside that oversized sheet* — behind the keyboard. The sheet is now **capped to the visible viewport** (`fitModals` sets `maxHeight = visualViewport.height`), so focusing any field scrolls **it** into view above the keyboard and the rest of the form scrolls underneath. The scroll runs a few times (60/250/450 ms) to land correctly as the keyboard animates in.
+
+-----
+
 ## v0.29.3 — 2026-06-15
 
 - **Root-cause modal fix (the merch-edit bug, and the whole "can't see my screen" class).** Every popup sheet (merch edit, new/edit buy, scan, move-to-MOC, photo/gallery/part-image viewers, MOC editor, import) was rendered **inside** the scrollable `.content` container. On iOS, `position:fixed` is trapped by a scrolling ancestor instead of the viewport — so sheets slid off-screen, the tab bar showed through behind them, and the keyboard hid the field. All modals now render through a **portal to `<body>`** (Preact `createPortal`), escaping `.content` entirely. Combined with the v0.29.2 `visualViewport.offsetTop` tracking, sheets stay put and the focused field stays above the keyboard.
