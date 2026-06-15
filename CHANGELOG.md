@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.29.5 — 2026-06-15
+
+- **Sheet / pop-up top spacing + sticky blurred nav.** v0.29.4's `max-height:100%` let tall sheets (e.g. merch edit) run to the very top, colliding the title with the status bar/clock. Added safe-area-aware top whitespace (`padding-top: 22px + env(safe-area-inset-top)`), and made the sheet header a **sticky, blurred top nav** (iOS-style) — it stays pinned while the form scrolls underneath. Applies to every modal sheet (each starts with a Header row).
+
+-----
+
 ## v0.29.4 — 2026-06-15
 
 - **Keyboard / focused-field visibility (the actual fix).** The sheet's `max-height` was `85vh` of the **full** screen, so when the keyboard was up the sheet was taller than the visible strip and `scrollIntoView` centred the focused field *inside that oversized sheet* — behind the keyboard. The sheet is now **capped to the visible viewport** (`fitModals` sets `maxHeight = visualViewport.height`), so focusing any field scrolls **it** into view above the keyboard and the rest of the form scrolls underneath. The scroll runs a few times (60/250/450 ms) to land correctly as the keyboard animates in.
