@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.29.7 — 2026-06-15
+
+- **Pop-up fix (back button untappable / sheet covers whole screen).** v0.29.4 set sheets to `max-height:100%`, which made them fill the entire screen — no backdrop to tap-dismiss, and the back button sat in the iOS status-bar tap zone at the very top (which the system swallows, so taps didn't register). Sheets now leave a top gap (`max-height: calc(100% - 28px - env(safe-area-inset-top))`): a tappable backdrop strip + the back button clears the status bar. The keyboard cap is handled by this CSS against the visible-viewport-sized modal, so focused fields still scroll into view above the keyboard. Removed the JS that was forcing the sheet to full visible height.
+
+-----
+
 ## v0.29.6 — 2026-06-15
 
 - **Reverted the sticky/blurred sheet header from v0.29.5** — it broke the pop-up layout and made the back button untappable. Kept only the safe-area top whitespace (title clears the status bar/clock); sheets are back to normal scrolling.
