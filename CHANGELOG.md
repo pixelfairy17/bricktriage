@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.29.6 — 2026-06-15
+
+- **Reverted the sticky/blurred sheet header from v0.29.5** — it broke the pop-up layout and made the back button untappable. Kept only the safe-area top whitespace (title clears the status bar/clock); sheets are back to normal scrolling.
+
+-----
+
 ## v0.29.5 — 2026-06-15
 
 - **Sheet / pop-up top spacing + sticky blurred nav.** v0.29.4's `max-height:100%` let tall sheets (e.g. merch edit) run to the very top, colliding the title with the status bar/clock. Added safe-area-aware top whitespace (`padding-top: 22px + env(safe-area-inset-top)`), and made the sheet header a **sticky, blurred top nav** (iOS-style) — it stays pinned while the form scrolls underneath. Applies to every modal sheet (each starts with a Header row).
