@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.29.2 — 2026-06-15
+
+- **Merch edit / all modal sheets — keyboard pushes the sheet off-screen.** When iOS opens the keyboard it shifts the visual viewport down (`offsetTop` > 0), but a `position:fixed` bottom sheet stayed anchored to the layout-viewport top — so the sheet slid up off-screen and the app/tab-bar showed through behind it, with the field you were editing hidden. Modals now track `visualViewport.offsetTop/offsetLeft` (not just height), keeping the sheet aligned to what's actually visible and the focused field above the keyboard.
+
+-----
+
 ## v0.29.1 — 2026-06-15
 
 - **#8 follow-up — keyboard fix vs. viewport sizer conflict.** The 0.29.0 keyboard fix added a second `visualViewport` handler that fought the existing standalone viewport sizer (`fitApp`) — both set `#app` height to different values on every keyboard event, thrashing the layout and breaking field editing inside sheets (e.g. **merch → Qty**). Consolidated into a single set of handlers: `#app` shrinks to the visible viewport **only while the keyboard is open** (otherwise sized from `window.innerHeight` for the standalone-stale-units case), modal sheets stay pinned above the keyboard, and the focused field scrolls into view app-wide.
