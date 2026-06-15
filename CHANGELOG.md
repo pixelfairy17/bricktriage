@@ -8,6 +8,20 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.29.0 — 2026-06-15
+
+UI-bug sweep + backlog from the sorting session.
+
+- **#1 Sorting — 🎯 Target set.** Pick the set you're filling; every scan/search then matches **only** that set. A single unambiguous match auto-logs +1; otherwise the matching colour rows are listed for a tap. The target persists (`bt:sortTarget`); tap ✕ to clear and hunt across all sets again.
+- **#6 Minifigs.** Sets now fetch their minifigs from Rebrickable (`/sets/{set}/minifigs/` + `/minifigs/{fig}/parts/`). New **Minifigs** accordion in set detail: each fig is its own collapsible parts inventory (legs/torso/head/hair/accessories) with per-fig have/need + **Mark all parts present**. Tracked **separately** from the main parts count (minifig parts aren't in the base set inventory). Sets tracked before this build get a one-tap **Fetch minifigs** button. Minifig data rides along inside the set record (backup unchanged, still `v: 6`).
+- **#3 Parts — tap to view.** Tapping any part image (set parts or minifig parts) opens it full-size with its number/colour and a BrickLink part link — disambiguates lookalike parts.
+- **#4 BUG FIX — Select mode corruption.** Leaving ☑ Select mode no longer mangles the part rows (qty vanishing, a dead checkbox left behind). Rows are now keyed per mode so Preact remounts them cleanly — same positional-diffing landmine as v0.20–v0.22.
+- **#5 Select mode upgraded.** Rows keep their − / qty / + steppers in select mode, and tapping a row marks it all-present (greys it out, tap again to undo). Batch **Mark N as have** still works. Everything autosaves.
+- **#7 Spares excluded from group totals.** Colour-group have/need counters no longer add spares unless **Settings → count spares** is on (Black reads 10/10, not 10/15) — matching how completion % already worked.
+- **#8 BUG FIX — keyboard hides fields.** The iOS soft keyboard no longer covers the field being edited (notes, prices, etc.). The app tracks the keyboard via `visualViewport`, shrinks to the visible area and scrolls the focused field into view — app-wide, not just modal sheets.
+
+-----
+
 ## v0.28.1 — 2026-06-15
 
 - **Backup now includes the Rebrickable API key** — restoring a backup also restores the key, so it no longer has to be re-entered after re-adding the app to the Home Screen. Backup format `v: 6`; import is backward-compatible with `v: 5`. Keep backup files private (the deployed app never contains the key).
