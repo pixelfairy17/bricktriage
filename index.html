@@ -56,9 +56,13 @@
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:20; display:flex; align-items:flex-end; }
   /* max-height is capped to the VISIBLE viewport at runtime (fitModals) so a focused field can always
      scroll above the keyboard; 100% here is the no-JS fallback (bounded by the modal, not 85vh). */
+  /* Sheet leaves a gap at the top: a tappable backdrop strip + clears the iOS status-bar tap zone so
+     the back button is reachable. max-height is relative to the modal, which fitModals sizes to the
+     visible viewport — so when the keyboard is up the sheet still fits above it and fields scroll in. */
   .sheet { background:var(--bg); border-top:1px solid var(--line); border-radius:18px 18px 0 0;
-    width:100%; max-width:520px; margin:0 auto; max-height:100%; overflow-y:auto;
-    padding:calc(22px + env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom)); }
+    width:100%; max-width:520px; margin:0 auto; overflow-y:auto;
+    max-height:calc(100% - 28px - env(safe-area-inset-top));
+    padding:16px 16px calc(40px + env(safe-area-inset-bottom)); }
   .badge { font-size:11px; font-weight:700; border-radius:999px; padding:1px 7px; }
   a { color:var(--blue); }
 </style>
@@ -85,8 +89,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.29.6";
+const APP_VERSION = "0.29.7";
 const CHANGELOG = [
+  ["0.29.7", "2026-06-15", [
+    "Pop-up fix: sheets no longer fill the entire screen. v0.29.4 had made them max-height:100%, which left no tappable backdrop and jammed the back button into the iOS status-bar tap zone (so it wouldn't register). Sheets now leave a gap at the top (tappable to dismiss, back button clear of the status bar) while still fitting above the keyboard so focused fields scroll into view.",
+  ]],
   ["0.29.6", "2026-06-15", [
     "Reverted the sticky/blurred sheet header from 0.29.5 — it broke the pop-up and made the back button untappable. Kept only the safe-area top whitespace so the title clears the status bar/clock. Sheets are back to normal scrolling.",
   ]],
@@ -3731,10 +3738,6 @@ function fitModals() {
     ms[i].style.top = top + "px";
     ms[i].style.left = left + "px";
     ms[i].style.height = h + "px";
-    // Cap the sheet to the visible strip so a focused field can scroll above the keyboard
-    // (instead of being centred inside an oversized 85vh sheet that runs behind it).
-    var sheet = ms[i].querySelector(".sheet");
-    if (sheet) sheet.style.maxHeight = h + "px";
   }
 }
 function fitAll() { fitApp(); fitModals(); }
