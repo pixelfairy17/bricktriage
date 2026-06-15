@@ -79,8 +79,17 @@ import { get as idbGet, set as idbSet, del as idbDelete, keys as idbKeys, getMan
 const html = htm.bind(h);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.28.1";
+const APP_VERSION = "0.29.0";
 const CHANGELOG = [
+  ["0.29.0", "2026-06-15", [
+    "#1 Sorting: 🎯 Target set — pick the set you're filling, then every scan/search only matches rows in that set (single match auto-logs +1). Tap the chip to clear and go back to hunting across all sets",
+    "#6 Minifigs: sets now fetch their minifigs from Rebrickable — a Minifigs accordion lists each fig with its own collapsible parts inventory (legs/torso/head/hair/accessories), per-fig have/need + Mark all. Tracked separately from the main parts count. Existing sets get a one-tap 'Fetch minifigs' button",
+    "#3 Parts: tap any part (or minifig-part) image to open it full-size with its number/colour + a BrickLink link — disambiguates lookalike parts",
+    "#4 BUG FIX: leaving ☑ Select mode no longer corrupted the part rows (qty vanished, dead checkbox left behind) — rows are now keyed per mode so Preact remounts cleanly (same positional-diff landmine as v0.20–v0.22)",
+    "#5 Select mode upgraded: rows keep their − / qty / + steppers, and tapping a row marks it all-present (greys it out with an inline undo). Batch 'Mark N as have' still there. Everything autosaves",
+    "#7 Parts: colour-group have/need counters no longer include spares (unless Settings → count spares is on) — Black reads 10/10, not 10/15",
+    "#8 BUG FIX: the iOS keyboard no longer hides the field you're typing in (notes, prices, etc.) — the app now tracks the keyboard (visualViewport) and scrolls the focused field into view above it, everywhere (not just modal sheets)",
+  ]],
   ["0.28.1", "2026-06-15", [
     "Backup now includes your Rebrickable API key — restoring a backup brings the key back, so you no longer re-enter it after re-adding the app to the Home Screen. Keep backups private (the deployed app never contains the key).",
     "Cleaned up the deployed file for GitHub Pages (removed local-path save artifact).",
@@ -284,6 +293,7 @@ const blBoxImg = n => `https://img.bricklink.com/ItemImage/ON/0/${encodeURICompo
 // one-tap "bought new" autofill: everything present + keeping
 const applyNewAutofill = r => {
   for (const p of r.parts) p.qtyFound = p.qtyNeeded;
+  for (const f of (r.minifigs || [])) for (const p of (f.parts || [])) p.qtyFound = p.qtyNeeded;
   r.instructions = "paper";
   if (!(r.booklets || []).length) r.booklets = [{ id: String(Date.now()), book: 1, cond: "excellent", note: "" }];
   else r.booklets = r.booklets.map(b => ({ ...b, cond: "excellent" }));
@@ -492,7 +502,43 @@ async function fetchFullSet(setNum, onProgress) {
     colorID: r.color?.id, colorName: r.color?.name,
     img: r.part?.part_img_url, qtyNeeded: r.quantity, qtyFound: 0, isSpare: !!r.is_spare,
   }));
-  return { meta, parts };
+  let minifigs = [];
+  try { minifigs = await fetchSetMinifigs(setNum, onProgress); } catch { minifigs = []; }
+  return { meta, parts, minifigs };
+}
+// #6 minifigs: a set's figs + each fig's part inventory (legs/torso/head/hair/accessories).
+// Stored on the set record (rec.minifigs), tracked separately from the main parts count.
+async function fetchSetMinifigs(setNum, onProgress) {
+  onProgress?.("Fetching minifigs…");
+  const figs = [];
+  let url = `https://rebrickable.com/api/v3/lego/sets/${setNum}/minifigs/?page_size=100`;
+  while (url) { const j = await rbFetch(url); figs.push(...(j.results || [])); url = j.next; }
+  const out = [];
+  for (const f of figs) {
+    onProgress?.(`Minifig ${f.set_num}…`);
+    const rows = [];
+    let pu = `https://rebrickable.com/api/v3/lego/minifigs/${encodeURIComponent(f.set_num)}/parts/?page_size=1000`;
+    while (pu) { const j = await rbFetch(pu); rows.push(...(j.results || [])); pu = j.next; }
+    out.push({
+      figNum: f.set_num, name: f.set_name, img: f.set_img_url, quantity: f.quantity || 1,
+      parts: rows.map((r, i) => ({
+        id: `${f.set_num}|${r.part?.part_num}|${r.color?.id}|${r.is_spare ? "s" : "n"}|${i}`,
+        partNumber: r.part?.part_num, partName: r.part?.name,
+        colorID: r.color?.id, colorName: r.color?.name,
+        img: r.part?.part_img_url, qtyNeeded: r.quantity, qtyFound: 0, isSpare: !!r.is_spare,
+      })),
+    });
+  }
+  return out;
+}
+// minifig completion (excludes spares + separators, like the main parts list)
+function minifigStats(figs) {
+  let need = 0, found = 0;
+  for (const f of (figs || [])) for (const p of (f.parts || [])) {
+    if (isSeparator(p) || p.isSpare) continue;
+    need += p.qtyNeeded; found += Math.min(p.qtyFound, p.qtyNeeded);
+  }
+  return { found, total: need, pct: need ? Math.round((found / need) * 100) : 0 };
 }
 async function downscale(file, max = 1024) {
   try {
@@ -900,6 +946,28 @@ function App() {
   const addSetFromBuy = id => { setAddFromBuyId(id); setOpenSetNum(null); setAdding(true); setTab("sets"); };
   const backToOriginBuy = () => { setAdding(false); setAddFromBuyId(null); setTab("buys"); }; // openBuyId still set
   const mutateBuys = fn => setBuys(prev => { const next = fn(prev); save("bt:buys", next); return next; });
+
+  // #8 iOS keyboard tracking (app-wide, not just modal sheets): when the soft keyboard opens,
+  // visualViewport shrinks while window.innerHeight does not — so the fixed-height app keeps its
+  // bottom (notes, prices, etc.) hidden behind the keyboard. Shrink #app to the visible viewport
+  // and scroll the focused field into view above the keyboard.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const app = document.getElementById("app");
+    const apply = () => { app.style.height = Math.round(vv.height) + "px"; };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    const onFocus = e => {
+      const el = e.target;
+      if (el && el.matches && el.matches("input, textarea, select"))
+        setTimeout(() => el.scrollIntoView({ block: "center", behavior: "smooth" }), 250);
+    };
+    document.addEventListener("focusin", onFocus);
+    return () => { vv.removeEventListener("resize", apply); vv.removeEventListener("scroll", apply);
+      document.removeEventListener("focusin", onFocus); app.style.height = ""; };
+  }, []);
 
   return html`
     <div class="shell">
@@ -1979,7 +2047,7 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
         const cond = defaultCondFromBuys(buyIds, buys);
         let rec = { ...r.meta, instructions: "none", triage: "undecided", condition: cond,
           built: false, pricePaid: 0, rrp: 0, box: { has: false, cond: "good", note: "" },
-          buyIds: [...buyIds], notes: "", dateAdded: Date.now(), parts: r.parts };
+          buyIds: [...buyIds], notes: "", dateAdded: Date.now(), parts: r.parts, minifigs: r.minifigs || [] };
         if (cond === "new") rec = applyNewAutofill(rec);
         onQuickSave(rec, bulkMode);
         if (!bulkMode) clearDraft();
@@ -2070,7 +2138,7 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
           const cond = defaultCondFromBuys(buyIds, buys);
           let rec = { ...fetched.meta, instructions: "none", triage: "undecided", condition: cond,
             built: false, pricePaid: 0, rrp: 0, box: { has: false, cond: "good", note: "" },
-            buyIds, notes: "", dateAdded: Date.now(), parts: fetched.parts };
+            buyIds, notes: "", dateAdded: Date.now(), parts: fetched.parts, minifigs: fetched.minifigs || [] };
           if (cond === "new") rec = applyNewAutofill(rec);
           clearDraft();
           onSave(rec);
@@ -2117,6 +2185,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const [selMode, setSelMode] = useState(false);
   const [selIds, setSelIds] = useState(() => new Set());
   const toggleSelPart = id => setSelIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const [viewPart, setViewPart] = useState(null); // #3 full-size part image
   const toggleColor = c => setOpenColors(prev => {
     const n = new Set(prev); n.has(c) ? n.delete(c) : n.add(c); return n;
   });
@@ -2155,6 +2224,13 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       const floor = (rowAlloc.get(id) || []).reduce((a, x) => a + x.qty, 0);
       p.qtyFound = Math.max(floor, Math.max(0, Math.min(p.qtyNeeded, p.qtyFound + d)));
     }
+    return r;
+  });
+  // #5: tap a row in select mode → mark all present; tap again → back to the MOC-allocated floor (or 0)
+  const toggleFull = p => change(r => {
+    const x = r.parts.find(y => y.id === p.id);
+    if (x) { const floor = (rowAlloc.get(x.id) || []).reduce((a, z) => a + z.qty, 0);
+      x.qtyFound = x.qtyFound >= x.qtyNeeded ? floor : x.qtyNeeded; }
     return r;
   });
 
@@ -2387,6 +2463,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
         onInput=${e => change(r => { r.notes = e.target.value; return r; })}></textarea>
     </${Acc}>
 
+    <${MinifigSection} rec=${rec} change=${change} onView=${setViewPart} />
+
     <div class="card" style="padding:12px">
       <input placeholder="Filter parts (name / number / colour)" value=${q} onInput=${e => setQ(e.target.value)} />
       <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
@@ -2456,8 +2534,11 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
 
     ${groups.map(([color, list]) => {
       const open = q.trim().length > 0 || openColors.has(color);
-      const f = list.reduce((a, p) => a + Math.min(p.qtyFound, p.qtyNeeded), 0);
-      const t = list.reduce((a, p) => a + p.qtyNeeded, 0);
+      // #7: spares don't count toward the group's have/need (unless Settings → count spares)
+      const inclSpares = countSpares();
+      const counted = list.filter(p => inclSpares || !p.isSpare);
+      const f = counted.reduce((a, p) => a + Math.min(p.qtyFound, p.qtyNeeded), 0);
+      const t = counted.reduce((a, p) => a + p.qtyNeeded, 0);
       return html`<div style="margin-bottom:8px">
         <button class="row" onClick=${() => toggleColor(color)}
           style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
@@ -2467,9 +2548,9 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
             <span class="dim">${open ? "▾" : "▸"}</span>
           </span>
         </button>
-        ${open && html`<div style="margin-top:6px">${list.map(p => html`<${PartRow} p=${p} bump=${bump}
-          alloc=${rowAlloc.get(p.id)} onMove=${() => setMoveP(p)} mode=${logMode}
-          selMode=${selMode} selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)} />`)}</div>`}
+        ${open && html`<div style="margin-top:6px">${list.map(p => html`<${PartRow} key=${(selMode ? "s-" : "n-") + p.id} p=${p} bump=${bump}
+          alloc=${rowAlloc.get(p.id)} onMove=${() => setMoveP(p)} onView=${() => setViewPart(p)} mode=${logMode}
+          selMode=${selMode} selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)} onToggleFull=${toggleFull} />`)}</div>`}
       </div>`;
     })}
 
@@ -2497,7 +2578,70 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     ${galleryAt != null && html`<${SetGalleryViewer} photos=${photos} start=${galleryAt} defaultIdx=${defaultIdx}
       onSetDefault=${i => change(r => { r.imgDefault = photos[i].kind === "box" ? "box" : "rb"; return r; })}
       onClose=${() => setGalleryAt(null)} />`}
+    ${viewPart && html`<${PartImgViewer} p=${viewPart} onClose=${() => setViewPart(null)} />`}
   </div>`;
+}
+
+// #6 minifig inventory — separate accordion; each fig has its own collapsible parts list, tracked
+// independently of the main set completion. Existing sets get a one-tap fetch.
+function MinifigSection({ rec, change, onView }) {
+  const [open, setOpen] = useState(false);
+  const [openFig, setOpenFig] = useState(() => new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const figs = rec.minifigs;
+  const fetched = Array.isArray(figs);
+  const stats = minifigStats(figs || []);
+  const toggleFig = id => setOpenFig(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  async function fetchNow() {
+    if (!getKey().trim()) { setErr("Add your Rebrickable key in Settings first."); return; }
+    setBusy(true); setErr("");
+    try { const m = await fetchSetMinifigs(rec.setNum); change(r => { r.minifigs = m; return r; }); setOpen(true); }
+    catch (e) { setErr(e.message || String(e)); }
+    setBusy(false);
+  }
+  const bumpFig = (figNum, pid, d) => change(r => {
+    const f = (r.minifigs || []).find(x => x.figNum === figNum); if (!f) return r;
+    const p = f.parts.find(x => x.id === pid);
+    if (p) p.qtyFound = Math.max(0, Math.min(p.qtyNeeded, p.qtyFound + d));
+    return r;
+  });
+  const markFigAll = figNum => change(r => {
+    const f = (r.minifigs || []).find(x => x.figNum === figNum); if (!f) return r;
+    for (const p of f.parts) if (!isSeparator(p) && !p.isSpare) p.qtyFound = p.qtyNeeded;
+    return r;
+  });
+  const summary = fetched ? (figs.length ? `${figs.length} fig${figs.length > 1 ? "s" : ""} · ${stats.found}/${stats.total}` : "none") : "tap to fetch";
+  return html`<${Acc} title="Minifigs" summary=${summary} open=${open} onToggle=${() => setOpen(v => !v)}>
+    ${!fetched && html`<div>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">Minifigs aren't fetched for this set yet (added after the set was tracked).</div>
+      <button class="btn" disabled=${busy} onClick=${fetchNow}>${busy ? "Fetching…" : "Fetch minifigs"}</button>
+      ${err && html`<div class="card" style="color:var(--red);font-size:13px;margin-top:8px">${err}</div>`}
+    </div>`}
+    ${fetched && figs.length === 0 && html`<div class="dim" style="font-size:13px">This set has no minifigs.</div>`}
+    ${fetched && figs.map(f => {
+      const fs = minifigStats([f]);
+      const fOpen = openFig.has(f.figNum);
+      return html`<div key=${f.figNum} style="margin-bottom:8px">
+        <button class="row" onClick=${() => toggleFig(f.figNum)}
+          style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:8px 10px;color:var(--text);gap:10px">
+          ${f.img
+            ? html`<img class="partimg" src=${f.img} loading="lazy" onClick=${ev => { ev.stopPropagation(); onView({ partName: f.name, partNumber: f.figNum, colorName: "Minifig", img: f.img }); }}/>`
+            : html`<div class="partimg" style="background:var(--panel)"></div>`}
+          <div style="flex:1;min-width:0;text-align:left">
+            <div class="clamp2" style="font-size:13px;line-height:1.25">${f.name}${f.quantity > 1 ? ` ×${f.quantity}` : ""}</div>
+            <div class="dim mono" style="font-size:11px">${f.figNum} · ${f.parts.length} parts</div>
+          </div>
+          <span class="mono" style=${`font-size:12px;font-weight:700;flex-shrink:0;color:${fs.found >= fs.total ? "var(--green)" : "var(--dim)"}`}>${fs.found}/${fs.total}</span>
+          <span class="dim" style="flex-shrink:0">${fOpen ? "▾" : "▸"}</span>
+        </button>
+        ${fOpen && html`<div style="margin-top:6px">
+          <button class="ghost" style="margin-bottom:6px;padding:9px" onClick=${() => markFigAll(f.figNum)}>Mark all parts present</button>
+          ${f.parts.map(p => html`<${PartRow} key=${p.id} p=${p} bump=${(id, d) => bumpFig(f.figNum, id, d)} onView=${() => onView(p)} />`)}
+        </div>`}
+      </div>`;
+    })}
+  </${Acc}>`;
 }
 
 function MoveToMocSheet({ p, mocs, upsertMoc, available, onMove, onClose }) {
@@ -2547,32 +2691,45 @@ function MoveToMocSheet({ p, mocs, upsertMoc, available, onMove, onClose }) {
   </div>`;
 }
 
-function PartRow({ p, bump, alloc, onMove, selMode = false, selected = false, onSel, mode = "find" }) {
+function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = false, onSel, onToggleFull, mode = "find" }) {
   const isRem = mode === "remaining";
   const full = p.qtyFound >= p.qtyNeeded;
-  const done = p.qtyFound >= p.qtyNeeded;
+  const done = full;
   const allocQty = (alloc || []).reduce((a, x) => a + x.qty, 0);
-  if (selMode) return html`
-    <div class="row" onClick=${onSel}
-      style=${`background:var(--panel);border:1px solid ${selected ? "var(--green)" : "var(--line)"};border-radius:12px;padding:8px 10px;margin-bottom:6px;cursor:pointer`}>
-      <div style=${`width:22px;height:22px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;border:2px solid ${selected ? "var(--green)" : "var(--dim)"};background:${selected ? "var(--green)" : "transparent"};color:#1C1A17`}>${selected ? "✓" : ""}</div>
-      ${p.img ? html`<img class="partimg" src=${p.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
-      <div style="flex:1;min-width:0">
-        <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
-        <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber}${p.isSpare ? html` <span style="color:var(--blue);border:1px solid var(--blue);border-radius:4px;padding:0 4px;font-size:9px;font-weight:800;letter-spacing:.5px">SPARE</span>` : ""}</div>
-      </div>
-      <div class="mono" style=${`font-size:14px;font-weight:700;min-width:40px;text-align:center;color:${done ? "var(--green)" : "var(--text)"}`}>${p.qtyFound}/${p.qtyNeeded}</div>
-    </div>`;
+  // #3: tapping the part image opens it full-size (stopPropagation so it never triggers the row toggle)
+  const imgEl = p.img
+    ? html`<img class="partimg" src=${p.img} loading="lazy" onClick=${ev => { ev.stopPropagation(); onView?.(p); }}/>`
+    : html`<div class="partimg" style="background:var(--panel2)" onClick=${ev => { ev.stopPropagation(); onView?.(p); }}></div>`;
+  const spareTag = p.isSpare ? html` <span style="color:var(--blue);border:1px solid var(--blue);border-radius:4px;padding:0 4px;font-size:9px;font-weight:800;letter-spacing:.5px">SPARE</span>` : "";
+  const allocLine = allocQty > 0 && html`<div class="ellip" style="font-size:11px;color:var(--blue);font-weight:700;margin-top:2px">♻️ ${(alloc || []).map(x => `${x.qty} → ${x.mocName}`).join(" · ")}</div>`;
+
+  if (selMode) {
+    // #4/#5: select mode keeps − / qty / + steppers; the checkbox batch-selects, and tapping the
+    // body marks the row all-present (greys it out — tap again to undo). Everything autosaves.
+    return html`
+      <div class="row" style=${`background:var(--panel);border:1px solid ${full ? "var(--green)" : selected ? "var(--blue)" : "var(--line)"};border-radius:12px;padding:8px 10px;margin-bottom:6px;opacity:${full ? .55 : 1}`}>
+        <button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${selected ? "var(--blue)" : "var(--dim)"};background:${selected ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${onSel}>${selected ? "✓" : ""}</button>
+        ${imgEl}
+        <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => onToggleFull?.(p)}>
+          <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
+          <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber}${spareTag}</div>
+          ${allocLine}
+        </div>
+        <button class="step" style="width:34px" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>
+        <div class="mono" style=${`font-size:14px;font-weight:700;min-width:40px;text-align:center;color:${full ? "var(--green)" : "var(--text)"}`}>${p.qtyFound}/${p.qtyNeeded}</div>
+        <button class="step plus" style="width:34px" disabled=${full} onClick=${() => bump(p.id, +1)}>+</button>
+      </div>`;
+  }
   const numCol = isRem ? (full ? "var(--green)" : "var(--yellow)") : (done ? "var(--green)" : "var(--text)");
   const border = (isRem ? full : done) ? "var(--green)" : "var(--line)";
   const opacity = isRem ? 1 : (done ? .65 : 1);
   return html`
     <div class="row" style=${`background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;margin-bottom:6px;opacity:${opacity}`}>
-      ${p.img ? html`<img class="partimg" src=${p.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
+      ${imgEl}
       <div style="flex:1;min-width:0" onClick=${() => bump(p.id, full ? -p.qtyNeeded : p.qtyNeeded - p.qtyFound)}>
         <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
-        <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber} · <span style="color:var(--yellow)">${partRate(p).label}</span>${p.isSpare ? html` <span style="color:var(--blue);border:1px solid var(--blue);border-radius:4px;padding:0 4px;font-size:9px;font-weight:800;letter-spacing:.5px">SPARE</span>` : ""}</div>
-        ${allocQty > 0 && html`<div class="ellip" style="font-size:11px;color:var(--blue);font-weight:700;margin-top:2px">♻️ ${(alloc || []).map(x => `${x.qty} → ${x.mocName}`).join(" · ")}</div>`}
+        <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber} · <span style="color:var(--yellow)">${partRate(p).label}</span>${spareTag}</div>
+        ${allocLine}
       </div>
       ${onMove && p.qtyFound > 0 && html`<button class="step" style="width:34px;color:var(--purple);border-color:var(--purple)" onClick=${onMove}>→</button>`}
       <button class="step" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>
@@ -2581,14 +2738,38 @@ function PartRow({ p, bump, alloc, onMove, selMode = false, selected = false, on
     </div>`;
 }
 
+// #3 full-size part image with its number / colour + a BrickLink lookup (disambiguate lookalike parts)
+function PartImgViewer({ p, onClose }) {
+  return html`<div class="modal" style="align-items:center" onClick=${e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div style="max-width:520px;width:100%;max-height:100dvh;padding:16px;position:relative;display:flex;flex-direction:column;justify-content:center">
+      <button class="step" style="position:absolute;top:26px;right:26px;z-index:2;background:rgba(0,0,0,.65);border-color:rgba(255,255,255,.3);color:#fff" onClick=${onClose}>✕</button>
+      ${p.img
+        ? html`<img src=${p.img} style="width:100%;max-height:70vh;object-fit:contain;border-radius:14px;background:#fff"/>`
+        : html`<div class="card dim" style="text-align:center;padding:40px 16px">No image for this part.</div>`}
+      <div class="card" style="margin-top:10px">
+        <div style="font-size:15px;font-weight:700">${p.partName}</div>
+        <div class="dim mono" style="font-size:12px;margin-top:4px">${p.colorName} · ${p.partNumber}${p.isSpare ? " · spare" : ""}</div>
+        <a href=${`https://www.bricklink.com/v2/catalog/catalogitem.page?P=${encodeURIComponent(p.partNumber || "")}`} target="_blank" style="font-size:13px;font-weight:600;display:inline-block;margin-top:8px">BrickLink part ↗</a>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ---------- Sorting mode ----------
 function SortingMode({ index, buys, persistSet }) {
   const [q, setQ] = useState("");
   const [scan, setScan] = useState(false);
   const [tick, setTick] = useState(0); // re-read storage after bumps
   const [finder, setFinder] = useState(null); // null | {stage, part, colors, color, sets, count, chosen, msg}
+  // #1 target set: when set, every scan/search matches ONLY this set and a single match auto-logs +1.
+  const [targetNum, setTargetNumRaw] = useState(() => load("bt:sortTarget", null));
+  const setTargetNum = n => { setTargetNumRaw(n); n ? save("bt:sortTarget", n) : del("bt:sortTarget"); setFinder(null); };
+  const [autoMsg, setAutoMsg] = useState("");
   useEffect(() => { setFinder(null); }, [q]);
   const lastBulk = lastBulkBuyOf(buys, index);
+  // drop a stale target if its set was deleted
+  useEffect(() => { if (targetNum && !index.some(e => e.setNum === targetNum)) setTargetNum(null); }, [index, targetNum]);
+  const target = targetNum ? index.find(e => e.setNum === targetNum) : null;
 
   // bump first matching part row (non-spare preferred) in a record; returns the row or null
   const bumpInRec = (rec, partNum, colorId) => {
@@ -2638,14 +2819,17 @@ function SortingMode({ index, buys, persistSet }) {
     try {
       const r = await fetchFullSet(s.set_num, m => setFinder(prev => prev && { ...prev, msg: m }));
       const rec = { ...r.meta, instructions: "none", triage: "undecided",
-        buyIds: lastBulk ? [lastBulk.id] : [], notes: "", dateAdded: Date.now(), parts: r.parts };
+        buyIds: lastBulk ? [lastBulk.id] : [], notes: "", dateAdded: Date.now(), parts: r.parts, minifigs: r.minifigs || [] };
       const p = bumpInRec(rec, f.part.part_num, f.color.color_id);
       persistSet(rec); setTick(t => t + 1);
       setFinder({ stage: "done", msg: `Tracked ${rec.name}${lastBulk ? ` → ${lastBulk.label}` : ""}${p ? ` and logged +1 ${f.part.part_num}` : ""}.` });
     } catch (e) { setFinder({ stage: "error", msg: e.message || String(e) }); }
   }
 
-  const candidates = useMemo(() => index.filter(e => e.pct < 100 && e.triage !== "sell"), [index]);
+  // with a target set, only that set is in play (even if it's "complete"); otherwise every incomplete set
+  const candidates = useMemo(() => targetNum
+    ? index.filter(e => e.setNum === targetNum)
+    : index.filter(e => e.pct < 100 && e.triage !== "sell"), [index, targetNum]);
   const recs = useMemo(() => {
     const out = {};
     for (const e of candidates) out[e.setNum] = load(`bt:set:${e.setNum}`, null);
@@ -2670,27 +2854,65 @@ function SortingMode({ index, buys, persistSet }) {
   }, [q, recs, candidates]);
 
   const bump = (setNum, partId) => {
-    const rec = structuredClone(recs[setNum]);
+    const rec = structuredClone(recs[setNum] || load(`bt:set:${setNum}`, null));
+    if (!rec) return;
     const p = rec.parts.find(x => x.id === partId);
     if (p && p.qtyFound < p.qtyNeeded) p.qtyFound += 1;
     persistSet(rec);
     setTick(t => t + 1);
   };
 
+  // #1 after a scan with a target set: if exactly one incomplete row in the target matches the scanned
+  // part number, log +1 straight away. Otherwise leave the filtered list for a manual tap (colour choice).
+  const tryAutoLog = pid => {
+    if (!targetNum || !pid) return;
+    const rec = recs[targetNum] || load(`bt:set:${targetNum}`, null);
+    if (!rec) return;
+    const matches = rec.parts.filter(p => !p.isSpare && p.qtyFound < p.qtyNeeded && p.partNumber === pid);
+    if (matches.length === 1) {
+      bump(targetNum, matches[0].id);
+      setAutoMsg(`✓ +1 ${matches[0].colorName} ${pid} → ${rec.name}`);
+      setTimeout(() => setAutoMsg(""), 2500);
+    }
+  };
+
   return html`<div>
-    <${Header} title="Sorting mode" sub=${`${candidates.length} incomplete sets in the hunt`}
+    <${Header} title="Sorting mode" sub=${target ? `🎯 filling ${target.name}` : `${candidates.length} incomplete sets in the hunt`}
       right=${html`<button class="step" style="width:46px;height:46px;font-size:18px" onClick=${() => setScan(true)}>📷</button>`} />
-    <input style="font-size:18px;padding:16px 14px" placeholder="Part name, number or colour…"
+
+    <div class="card" style="padding:10px">
+      ${target ? html`<div class="row" style="gap:10px">
+        ${target.img ? html`<img class="setimg" style="width:40px;height:40px" src=${target.img}/>` : html`<div class="setimg" style="width:40px;height:40px;background:var(--panel2)"></div>`}
+        <div style="flex:1;min-width:0">
+          <div class="label" style="margin:0">🎯 Target set</div>
+          <div class="ellip" style="font-weight:700;font-size:14px">${target.name}</div>
+          <div class="dim mono" style="font-size:11px">${target.setNum} · scans & search match only this set</div>
+        </div>
+        <button class="step" style="width:38px;color:var(--red);border-color:var(--red)" onClick=${() => setTargetNum(null)}>✕</button>
+      </div>`
+      : html`<div class="row" style="gap:8px;align-items:center">
+        <span class="label" style="margin:0;flex-shrink:0">🎯 Target</span>
+        <select value="" onChange=${e => e.target.value && setTargetNum(e.target.value)} style="flex:1">
+          <option value="">— none (hunt all sets) —</option>
+          ${index.map(e => html`<option key=${e.setNum} value=${e.setNum}>${e.name} (${e.setNum})</option>`)}
+        </select>
+      </div>`}
+    </div>
+
+    ${autoMsg && html`<div class="card" style="color:var(--green);font-size:14px;font-weight:700">${autoMsg}</div>`}
+
+    <input style="font-size:18px;padding:16px 14px" placeholder=${target ? "Scan or type a part to add to this set…" : "Part name, number or colour…"}
       value=${q} onInput=${e => setQ(e.target.value)} />
     <div style="height:12px"></div>
 
     ${q.trim().length < 2 && html`<div class="card dim" style="font-size:14px;line-height:1.5">
-      Brick in hand → type 2+ characters (“2x4 red”, “3001”, “technic pin”) or scan it with 📷.
-      Every incomplete set needing that part appears. Tap <b style="color:var(--yellow)">+1</b> to log it.
+      ${target
+        ? html`Brick in hand → scan it with 📷 or type 2+ characters. Only <b style="color:var(--yellow)">${target.name}</b> is matched; a single match auto-logs +1, otherwise tap the right colour.`
+        : html`Brick in hand → type 2+ characters (“2x4 red”, “3001”, “technic pin”) or scan it with 📷. Every incomplete set needing that part appears. Tap <b style="color:var(--yellow)">+1</b> to log it.`}
     </div>`}
     ${q.trim().length >= 2 && hits.length === 0 && !finder && html`<div>
-      <div class="card dim" style="text-align:center">No incomplete set needs a part matching “${q}”.</div>
-      <button class="ghost" onClick=${finderStart}>🔎 Find LEGO sets containing “${q.trim()}”</button>
+      <div class="card dim" style="text-align:center">${target ? html`${target.name} doesn't need a part matching “${q}” (or it's complete).` : html`No incomplete set needs a part matching “${q}”.`}</div>
+      ${!target && html`<button class="ghost" onClick=${finderStart}>🔎 Find LEGO sets containing “${q.trim()}”</button>`}
     </div>`}
 
     ${finder?.stage === "busy" && html`<div class="card dim" style="text-align:center">${finder.msg}</div>`}
@@ -2762,8 +2984,8 @@ function SortingMode({ index, buys, persistSet }) {
         <button class="step plus" style="width:58px;height:52px;font-size:17px" onClick=${() => bump(set.setNum, p.id)}>+1</button>
       </div>`)}
 
-    ${scan && html`<${ScanModal} hint="One part per photo" onClose=${() => setScan(false)}
-      onPick=${it => { setScan(false); setQ(it.id || it.name || ""); }} />`}
+    ${scan && html`<${ScanModal} hint=${target ? `Adding to ${target.name}` : "One part per photo"} onClose=${() => setScan(false)}
+      onPick=${it => { setScan(false); const pid = it.id || it.name || ""; setQ(pid); tryAutoLog(pid); }} />`}
   </div>`;
 }
 
@@ -3374,7 +3596,7 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
     del("bt:index"); del("bt:buys"); del("bt:buyorder"); del("bt:merch"); del("bt:mocs");
     del("bt:bv:kind"); del("bt:bv:cat"); del("bt:bv:sort");
     del("bt:sv:filter"); del("bt:sv:sort"); del("bt:sv:view"); del("bt:sv:groups");
-    del("bt:sv:theme"); del("bt:sv:tgroups"); del("bt:sv:seg");
+    del("bt:sv:theme"); del("bt:sv:tgroups"); del("bt:sv:seg"); del("bt:sortTarget");
     persistIndex([]); setBuys([]); saveMerchList?.([]); saveMocs?.([]); setConfirmWipe(false); setMsg("All data wiped.");
   }
 
