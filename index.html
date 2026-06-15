@@ -79,8 +79,11 @@ import { get as idbGet, set as idbSet, del as idbDelete, keys as idbKeys, getMan
 const html = htm.bind(h);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.29.1";
+const APP_VERSION = "0.29.2";
 const CHANGELOG = [
+  ["0.29.2", "2026-06-15", [
+    "Merch edit (and every modal sheet): fixed the keyboard pushing the sheet off-screen and revealing the tab bar behind it. The sheet now follows visualViewport.offsetTop, so when iOS shifts the page up to make room for the keyboard the sheet stays aligned to what's actually on screen and the focused field stays visible.",
+  ]],
   ["0.29.1", "2026-06-15", [
     "#8 follow-up: the keyboard fix shipped in 0.29.0 fought the existing standalone viewport sizer (two handlers set the app height to different values on every keyboard event), which broke editing fields in sheets — e.g. merch Qty. Consolidated into one set of handlers: the app shrinks to the visible viewport only while the keyboard is open, modal sheets stay pinned above it, and the focused field scrolls into view everywhere",
   ]],
@@ -3695,17 +3698,27 @@ function fitApp() {
   var h = kbOpen() ? vph() : (window.innerHeight || vph());
   if (h > 0) a.style.height = h + "px";
 }
-// Pin open .modal layers (bottom sheets) to the visible viewport too, so their fields
-// stay above the keyboard instead of scrolling out of reach.
+// Pin open .modal layers (bottom sheets) to the VISUAL viewport so their fields stay above the
+// keyboard. Critical: also follow visualViewport.offsetTop/offsetLeft — when iOS opens the keyboard
+// it shifts the visual viewport down (offsetTop > 0) while a position:fixed sheet stays anchored to
+// the layout-viewport top, which pushes the sheet up off-screen and reveals the app/tab-bar behind
+// it (the merch-edit bug). Tracking the offset keeps the sheet aligned to what's actually visible.
 function fitModals() {
-  var h = vph();
+  var v = window.visualViewport;
+  var top = v ? v.offsetTop : 0;
+  var left = v ? v.offsetLeft : 0;
+  var h = v ? v.height : window.innerHeight;
   var ms = document.getElementsByClassName("modal");
-  for (var i = 0; i < ms.length; i++) ms[i].style.height = h + "px";
+  for (var i = 0; i < ms.length; i++) {
+    ms[i].style.top = top + "px";
+    ms[i].style.left = left + "px";
+    ms[i].style.height = h + "px";
+  }
 }
 function fitAll() { fitApp(); fitModals(); }
-addEventListener("resize", fitApp);
-addEventListener("orientationchange", fitApp);
-addEventListener("pageshow", fitApp);
+addEventListener("resize", fitAll);
+addEventListener("orientationchange", fitAll);
+addEventListener("pageshow", fitAll);
 window.visualViewport?.addEventListener("resize", fitAll);
 window.visualViewport?.addEventListener("scroll", fitAll);
 // Bring the focused field into view above the keyboard — anywhere in the app, not just sheets.
