@@ -8,6 +8,16 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.30.0 — 2026-06-16
+
+- **#1 Link existing set / merch to a buy.** A buy's detail page now lets you attach an *existing* set or merch item that currently belongs to no buy. `+ Link existing set` / `+ Link existing merch` (each with a count) appear only when there's something unlinked; tapping opens a picker showing just those orphan items, and the list shrinks live as you link them.
+- **#2 Minifig parts no longer duplicated in the parts list.** The set-parts fetch now passes `inc_minifig_parts=0`, so minifig pieces (hair, torsos, accessories) appear only in the Minifigs accordion — not the main parts list. Existing sets keep their already-imported minifig rows until re-tracked.
+- **#3 Found spares stay visible with Spares off.** Hiding spares now keeps any spare you've actually logged (`qtyFound > 0`) on screen, so found spares don't vanish when the Spares chip is toggled off.
+- **#4 Built is reversible.** Marking a set Built still auto-fills every unticked main part, but it now records what it filled — un-ticking Built undoes exactly that fill and leaves hand-counted parts untouched.
+- **#5 Smarter Select mode.** Entering Select mode auto-expands all part groups. The sticky batch button now reads the selection: when every picked row is already *have*, it becomes `Mark N as not have` (clearing down to any MOC-allocated floor); otherwise it stays `Mark N as have (full qty)`.
+
+-----
+
 ## v0.29.7 — 2026-06-15
 
 - **Pop-up fix (back button untappable / sheet covers whole screen).** v0.29.4 set sheets to `max-height:100%`, which made them fill the entire screen — no backdrop to tap-dismiss, and the back button sat in the iOS status-bar tap zone at the very top (which the system swallows, so taps didn't register). Sheets now leave a top gap (`max-height: calc(100% - 28px - env(safe-area-inset-top))`): a tappable backdrop strip + the back button clears the status bar. The keyboard cap is handled by this CSS against the visible-viewport-sized modal, so focused fields still scroll into view above the keyboard. Removed the JS that was forcing the sheet to full visible height.
