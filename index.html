@@ -89,8 +89,15 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.29.7";
+const APP_VERSION = "0.30.0";
 const CHANGELOG = [
+  ["0.30.0", "2026-06-16", [
+    "#1 Buys: a buy's detail page can now LINK an existing set or merch that isn't tied to any buy — '+ Link existing set / merch' (with a count) appears only when there's something unlinked, opening a picker of just the orphan items; tap to attach (the list shrinks live).",
+    "#2 Minifig parts (hair, torsos, etc.) no longer double up in the main parts list — the set-parts fetch now passes inc_minifig_parts=0, so they live only in the Minifigs accordion. Existing sets need a re-track to drop already-imported minifig rows.",
+    "#3 Hiding Spares now keeps any spare you've actually logged (qtyFound > 0) on screen, so found spares don't disappear when you toggle spares off.",
+    "#4 Built is now reversible: marking a set Built still auto-fills every unticked part, but un-ticking Built undoes exactly that auto-fill — parts you'd found by hand keep their counts.",
+    "#5 Select mode: entering it auto-expands every part group; the batch button now reads the selection — when everything picked is already 'have' it flips to 'Mark N as not have' (down to any MOC-allocated floor), otherwise 'Mark N as have'.",
+  ]],
   ["0.29.7", "2026-06-15", [
     "Pop-up fix: sheets no longer fill the entire screen. v0.29.4 had made them max-height:100%, which left no tappable backdrop and jammed the back button into the iOS status-bar tap zone (so it wouldn't register). Sheets now leave a gap at the top (tappable to dismiss, back button clear of the status bar) while still fitting above the keyboard so focused fields scroll into view.",
   ]],
@@ -518,7 +525,10 @@ async function fetchFullSet(setNum, onProgress) {
   try { const map = await fetchThemesMap(); theme = rootTheme(map, m.theme_id) || "Other"; } catch {}
   const meta = { setNum: m.set_num, name: m.name, year: m.year, img: m.set_img_url, numParts: m.num_parts,
     themeId: m.theme_id, theme };
-  let url = `https://rebrickable.com/api/v3/lego/sets/${setNum}/parts/?page_size=1000`;
+  // inc_minifig_parts=0: keep the main parts list to the set's own bricks — minifig parts (hair,
+  // torsos, etc.) are fetched separately into rec.minifigs, so excluding them here stops the
+  // duplicate "hair in the parts list" rows.
+  let url = `https://rebrickable.com/api/v3/lego/sets/${setNum}/parts/?page_size=1000&inc_minifig_parts=0`;
   const rows = [];
   let page = 1;
   while (url) {
@@ -1005,7 +1015,7 @@ function App() {
             onBack=${backFromSet} onDelete=${() => deleteSet(openSetNum)} />`}
         ${tab === "sort" && html`<${SortingMode} key="v-sort" index=${index} buys=${buys} persistSet=${persistSet} />`}
         ${tab === "buys" && html`<${Buys} key="v-buys" buys=${buys} index=${index} cats=${cats} merch=${merch} onOpenMerch=${openMerchFromBuys} upsertMerch=${upsertMerch}
-          addBuy=${addBuy} updateBuy=${updateBuy} deleteBuy=${deleteBuy} mutateBuys=${mutateBuys} ensureCat=${ensureCat}
+          addBuy=${addBuy} updateBuy=${updateBuy} deleteBuy=${deleteBuy} mutateBuys=${mutateBuys} ensureCat=${ensureCat} persistSet=${persistSet}
           onOpenSet=${openSetFromBuys} onAddSet=${addSetFromBuy} openBuyId=${openBuyId} setOpenBuyId=${setOpenBuyId} />`}
         ${tab === "settings" && html`<${Settings} key="v-settings" index=${index} buys=${buys} merch=${merch} saveMerchList=${saveMerchList}
           mocs=${mocs} saveMocs=${saveMocs}
@@ -2246,7 +2256,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const groups = useMemo(() => {
     const ql = q.trim().toLowerCase();
     const list = rec.parts.filter(p =>
-      !isSeparator(p) && (showSpares || !p.isSpare) && (!hideFound || p.qtyFound < p.qtyNeeded) &&
+      // #3: hiding spares still surfaces spares you've actually logged (qtyFound > 0) so they don't vanish
+      !isSeparator(p) && (showSpares || !p.isSpare || p.qtyFound > 0) && (!hideFound || p.qtyFound < p.qtyNeeded) &&
       (!ql || p.partName?.toLowerCase().includes(ql) || p.partNumber?.toLowerCase().includes(ql) || p.colorName?.toLowerCase().includes(ql)));
     const keyOf = p => groupMode === "group" ? colorGroup(p.colorName) : (p.colorName || "Unknown");
     const map = new Map();
@@ -2332,8 +2343,23 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
               onClick=${() => setCondition("used")}>🔄 USED</button>
             <button class="badge" style=${rec.built ? "background:var(--green);color:#1C1A17;border:none;padding:4px 9px" : "background:transparent;color:var(--dim);border:1px solid var(--line);padding:4px 9px"}
               onClick=${() => change(r => {
-                r.built = !r.built;
-                if (r.built) for (const p of r.parts) if (!isSeparator(p) && !p.isSpare && p.qtyFound < p.qtyNeeded) p.qtyFound = p.qtyNeeded;
+                if (!r.built) {
+                  // mark Built → fill every unticked main part, remembering its prior count so un-building
+                  // can undo cleanly without wiping parts you'd already found by hand.
+                  r.built = true;
+                  const fill = {};
+                  for (const p of r.parts) {
+                    if (isSeparator(p) || p.isSpare) continue;
+                    if (p.qtyFound < p.qtyNeeded) { fill[p.id] = p.qtyFound; p.qtyFound = p.qtyNeeded; }
+                  }
+                  r.builtFill = fill;
+                } else {
+                  // un-build → restore exactly what Built auto-filled, leaving manual counts alone
+                  r.built = false;
+                  const fill = r.builtFill || {};
+                  for (const p of r.parts) if (Object.prototype.hasOwnProperty.call(fill, p.id)) p.qtyFound = fill[p.id];
+                  delete r.builtFill;
+                }
                 return r;
               })}>Built ${rec.built ? "✓" : ""}</button>
             ${rec.box?.has && html`<span class="badge" style="color:var(--blue);border:1px solid var(--blue)">📦</span>`}
@@ -2486,7 +2512,12 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
         <${Chip} label=${openColors.size >= groups.length + 1 && groups.length > 0 ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false}
           onClick=${() => setOpenColors(openColors.size >= groups.length + 1 ? new Set() : new Set(["__acc", ...groups.map(g => g[0])]))} />
         <${Chip} label=${selMode ? "✓ Done" : "☑ Select"} color="var(--green)" active=${selMode}
-          onClick=${() => { setSelMode(v => !v); setSelIds(new Set()); }} />
+          onClick=${() => {
+            const entering = !selMode;
+            setSelMode(entering); setSelIds(new Set());
+            // #5: entering select mode expands every part group so all rows are reachable to select
+            if (entering) setOpenColors(new Set(["__acc", ...groups.map(g => g[0])]));
+          }} />
       </div>
       ${logMode === "remaining" && html`<div class="row" style="gap:8px;margin-top:10px;align-items:center">
         <span class="dim" style="font-size:12px;flex:1">Pieces missing from this set (never had)</span>
@@ -2563,18 +2594,27 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       </div>`;
     })}
 
-    ${selMode && html`<div style="position:sticky;bottom:0;margin:0 -16px;background:var(--panel2);border-top:1px solid var(--line);padding:10px 16px 12px;z-index:9">
+    ${selMode && (() => {
+      // #5: detect the selection's state — if everything picked is already fully have, flip the action
+      // to "mark as not have" (down to any MOC-allocated floor); otherwise mark them all have.
+      const selParts = rec.parts.filter(p => selIds.has(p.id));
+      const allHave = selParts.length > 0 && selParts.every(p => p.qtyFound >= p.qtyNeeded);
+      return html`<div style="position:sticky;bottom:0;margin:0 -16px;background:var(--panel2);border-top:1px solid var(--line);padding:10px 16px 12px;z-index:9">
       <div class="row" style="gap:8px;margin-bottom:8px">
         <span class="mono dim" style="font-size:12px;flex:1">${selIds.size} selected</span>
         <button class="chip" style="border-color:var(--line);color:var(--dim)"
           onClick=${() => setSelIds(new Set(groups.flatMap(([, l]) => l.map(p => p.id))))}>All shown</button>
         <button class="chip" style="border-color:var(--line);color:var(--dim)" onClick=${() => setSelIds(new Set())}>None</button>
       </div>
-      <button class="btn green" disabled=${!selIds.size} onClick=${() => {
-        change(r => { for (const p of r.parts) if (selIds.has(p.id)) p.qtyFound = p.qtyNeeded; return r; });
+      <button class=${allHave ? "btn red" : "btn green"} disabled=${!selIds.size} onClick=${() => {
+        change(r => { for (const p of r.parts) if (selIds.has(p.id)) {
+          if (allHave) { const floor = (rowAlloc.get(p.id) || []).reduce((a, z) => a + z.qty, 0); p.qtyFound = floor; }
+          else p.qtyFound = p.qtyNeeded;
+        } return r; });
         setSelIds(new Set());
-      }}>Mark ${selIds.size} as have (full qty)</button>
-    </div>`}
+      }}>${allHave ? `Mark ${selIds.size} as not have` : `Mark ${selIds.size} as have (full qty)`}</button>
+    </div>`;
+    })()}
 
     <div style="height:8px"></div>
     ${!confirmDel
@@ -3023,7 +3063,7 @@ function BuyThumb({ b, sets }) {
   return ph;
 }
 
-function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy, updateBuy, deleteBuy, mutateBuys, ensureCat, onOpenSet, onAddSet, openBuyId, setOpenBuyId }) {
+function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy, updateBuy, deleteBuy, mutateBuys, ensureCat, persistSet, onOpenSet, onAddSet, openBuyId, setOpenBuyId }) {
   // persisted view state
   const [kindF, setKindFRaw] = useState(() => { const v = load("bt:bv:kind", "bulk"); return v === "all" ? "bulk" : v; });
   const [catF, setCatFRaw] = useState(() => load("bt:bv:cat", "all"));
@@ -3035,6 +3075,7 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
   const [showForm, setShowForm] = useState(false);
   const [editBuy, setEditBuy] = useState(null);
   const [addMerchFor, setAddMerchFor] = useState(null); // buyId for new pre-linked merch (#14)
+  const [linkPicker, setLinkPicker] = useState(null); // null | "set" | "merch" — link an existing unlinked item
   const [detailSort, setDetailSort] = useState("date");
   const [swipeId, setSwipeId] = useState(null);
   const [openNav, setOpenNav] = useState(null); // null | "kind" | "cat" 
@@ -3078,6 +3119,18 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
   };
   const bulk = stats("bulk"), reg = stats("regular"), loose = stats("loose");
   const noBuySets = useMemo(() => index.filter(e => !(e.buyIds || []).length), [index]);
+  const unlinkedMerch = useMemo(() => merch.filter(m => !(m.buyIds || []).length), [merch]);
+  // link an existing set / merch (one currently tied to no buy) into the open buy
+  const linkSetToBuy = (setNum, buyId) => {
+    const rec = structuredClone(load(`bt:set:${setNum}`, null));
+    if (!rec) return;
+    rec.buyIds = [...(rec.buyIds || []), buyId];
+    persistSet?.(rec);
+  };
+  const linkMerchToBuy = (merchId, buyId) => {
+    const m = merch.find(x => x.id === merchId);
+    if (m) upsertMerch?.({ ...m, buyIds: [...(m.buyIds || []), buyId] });
+  };
 
   const sortedBase = useMemo(() => {
     if (sort === "manual") {
@@ -3277,6 +3330,10 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
         <button class="btn" style="flex:1" onClick=${() => onAddSet?.(openBuy.id)}>+ Add set</button>
         <button class="btn" style="flex:1;background:var(--panel);border:1px solid var(--line);color:var(--text)" onClick=${() => setAddMerchFor(openBuy.id)}>+ Add merch</button>
       </div>
+      ${(noBuySets.length > 0 || unlinkedMerch.length > 0) && html`<div class="row" style="gap:8px;margin:-6px 0 12px">
+        ${noBuySets.length > 0 && html`<button class="ghost" style="flex:1;padding:10px" onClick=${() => setLinkPicker("set")}>+ Link existing set · ${noBuySets.length}</button>`}
+        ${unlinkedMerch.length > 0 && html`<button class="ghost" style="flex:1;padding:10px" onClick=${() => setLinkPicker("merch")}>+ Link existing merch · ${unlinkedMerch.length}</button>`}
+      </div>`}
       <div class="row" style="justify-content:space-between;margin:4px 2px 8px">
         <div class="label" style="margin:0">Sets from this buy · ${sets.length}</div>
         <${Chip} label=${detailSort === "pct" ? "↓ Completion" : "↓ Newest"} color="var(--blue)" active
@@ -3315,6 +3372,38 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
       ${addMerchFor && html`<${MerchSheet} initial=${null} presetBuyIds=${[addMerchFor]} buys=${buys} cats=${cats} addBuy=${addBuy}
         onClose=${() => setAddMerchFor(null)}
         onSave=${m => { upsertMerch?.(m); setAddMerchFor(null); }} />`}
+      ${linkPicker && html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setLinkPicker(null); }}>
+        <div class="sheet">
+          <${Header} title=${linkPicker === "set" ? "Link existing set" : "Link existing merch"} onBack=${() => setLinkPicker(null)} />
+          <div class="dim" style="font-size:12px;margin-bottom:10px">Only items not yet linked to any buy are shown. Tap to link to “${openBuy.label}”.</div>
+          ${linkPicker === "set" && (noBuySets.length === 0
+            ? html`<div class="card dim" style="text-align:center;padding:20px">No unlinked sets left.</div>`
+            : noBuySets.map(e => html`<div key=${e.setNum} class="card row" style="cursor:pointer" onClick=${() => linkSetToBuy(e.setNum, openBuy.id)}>
+                ${e.img ? html`<img class="setimg" src=${e.img} loading="lazy"/>` : html`<div class="setimg" style="background:var(--panel2)"></div>`}
+                <div style="flex:1;min-width:0">
+                  <div class="ellip" style="font-weight:700">${e.name}</div>
+                  <div class="dim mono" style="font-size:12px">${e.setNum} · ${e.year}</div>
+                </div>
+                <span class="step plus" style="width:42px;height:42px;display:flex;align-items:center;justify-content:center">+</span>
+              </div>`))}
+          ${linkPicker === "merch" && (unlinkedMerch.length === 0
+            ? html`<div class="card dim" style="text-align:center;padding:20px">No unlinked merch left.</div>`
+            : unlinkedMerch.map(m => {
+                const src = (m.photoIds || [])[0] && photoSrc(m.photoIds[0]);
+                return html`<div key=${m.id} class="card row" style="cursor:pointer" onClick=${() => linkMerchToBuy(m.id, openBuy.id)}>
+                  ${src ? html`<img class="setimg" style="object-fit:cover" src=${src}/>`
+                    : html`<div class="setimg" style="background:var(--panel2);border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:20px">🧰</div>`}
+                  <div style="flex:1;min-width:0">
+                    <div class="ellip" style="font-weight:700">${m.name}</div>
+                    <div class="dim mono" style="font-size:12px">${condLabel(m.condition)}${m.pricePaid ? ` · ${money(m.pricePaid)}` : ""}</div>
+                  </div>
+                  <span class="step plus" style="width:42px;height:42px;display:flex;align-items:center;justify-content:center">+</span>
+                </div>`;
+              }))}
+          <div style="height:8px"></div>
+          <button class="ghost" onClick=${() => setLinkPicker(null)}>Done</button>
+        </div>
+      </div></${Portal}>`}
       ${editModal}
       ${photoViewer}
     </div>`;
