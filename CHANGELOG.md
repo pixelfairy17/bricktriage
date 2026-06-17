@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.33.0 — 2026-06-17
+
+- **Hunt mode "Find sets containing" now lists sets in-app for printed/sticker parts.** When you find a part that isn't in any set you track, **🔎 Find LEGO sets containing** returns a selectable list of sets right in the app — tap one to track it and log the part. Previously, printed/sticker parts (Brickognize returns the BrickLink id, e.g. `65474pb04`, which Rebrickable's direct part lookup 404s on) dead-ended at a BrickLink link, forcing you to copy the set number by hand and add it from the Sets tab. The finder now resolves the BrickLink id via Rebrickable's `bricklink_id` filter first (guarded against a server that ignores the param), so the whole pick-a-set flow stays in-app. The BrickLink "find in sets" link only appears if the part is genuinely unindexed by Rebrickable.
+
+-----
+
 ## v0.32.0 — 2026-06-17
 
 - **#1 Delete set — Cancel button.** The confirm step now shows **Cancel** alongside **Delete permanently** (was a single "Tap again to permanently delete" with no way back), so an accidental tap on "Delete set…" no longer risks a second reflex tap deleting the set.

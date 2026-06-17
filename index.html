@@ -89,8 +89,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.32.0";
+const APP_VERSION = "0.33.0";
 const CHANGELOG = [
+  ["0.33.0", "2026-06-17", [
+    "Hunt mode → 'Find LEGO sets containing' now works for PRINTED / sticker parts too. Brickognize returns the BrickLink id (e.g. 65474pb04) which Rebrickable's direct lookup 404s on — it now resolves that id via Rebrickable's bricklink_id filter and lists the matching sets IN-APP (pick one → tracks the set + logs the part), instead of punting you to BrickLink to copy the set number by hand. The BrickLink link only shows now if the part is genuinely unindexed.",
+  ]],
   ["0.32.0", "2026-06-17", [
     "#1 Delete set now has a Cancel button — the confirm step shows Cancel + Delete permanently side by side, so an accidental tap on 'Delete set…' is easy to back out of.",
     "#1 ↺ Reset chip in a set's parts filter row — wipes every part count back to 0 (or the MOC-allocated floor) after a confirm, so you can recount from scratch. Also clears Built.",
@@ -535,6 +538,24 @@ async function rbFetch(url) {
     e.status = res.status; throw e;
   }
   return res.json();
+}
+// Resolve a scanned/typed id to a Rebrickable PART. Direct lookup first; on 404 (printed/sticker
+// parts like 65474pb04 live under a different Rebrickable number) fall back to Rebrickable's
+// bricklink_id filter so the in-app "find sets" flow still works instead of punting to BrickLink.
+// Guarded by count so a server that ignores the param (returning the whole catalogue) is rejected.
+async function resolveRbPart(pn) {
+  try {
+    return await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/`);
+  } catch (e) {
+    if (e.status !== 404) throw e;
+    try {
+      const j = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/?bricklink_id=${encodeURIComponent(pn)}&page_size=5`);
+      if (Array.isArray(j.results) && j.results.length && (j.count == null || j.count <= 5)) {
+        return j.results.find(r => r.external_ids?.BrickLink?.includes(pn)) || j.results[0];
+      }
+    } catch {}
+    return null;
+  }
 }
 // ---------- themes (Rebrickable theme list cached once; sets store their ROOT theme name) ----------
 async function fetchThemesMap() {
@@ -2958,16 +2979,15 @@ function SortingMode({ index, buys, persistSet }) {
     if (!getKey().trim()) { setFinder({ stage: "error", msg: "Add your Rebrickable key in Settings first." }); return; }
     setFinder({ stage: "busy", msg: "Looking up part…" });
     try {
-      const part = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/`);
-      const cj = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/colors/?page_size=200`);
+      const part = await resolveRbPart(pn);
+      // Not in Rebrickable even via the BrickLink id → genuinely unindexed; offer the BL lookup.
+      if (!part) { setFinder({ stage: "blfind", pn }); return; }
+      const cj = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(part.part_num)}/colors/?page_size=200`);
       const colors = cj.results || [];
-      if (!colors.length) { setFinder({ stage: "error", msg: "Rebrickable lists no colours/sets for this part." }); return; }
+      if (!colors.length) { setFinder({ stage: "blfind", pn }); return; }
       if (colors.length === 1) await finderSets(part, colors[0]);
       else setFinder({ stage: "colors", part, colors: [...colors].sort((a, b) => (b.num_sets || 0) - (a.num_sets || 0)) });
     } catch (e) {
-      // 404 = Rebrickable doesn't index this id. Usually a PRINTED / sticker-applied part
-      // (e.g. 65474pb04, 30350bpb187) — fall back to BrickLink's "part in which sets" lookup
-      // so e can still identify the set, instead of dead-ending.
       if (e.status === 404) { setFinder({ stage: "blfind", pn }); return; }
       setFinder({ stage: "error", msg: e.message || String(e) });
     }
