@@ -89,8 +89,20 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.33.0";
+const APP_VERSION = "0.34.0";
 const CHANGELOG = [
+  ["0.34.0", "2026-06-17", [
+    "MOC import fixed + readable: the CSV parser is now quote-aware (part names with commas no longer shift columns) and reads the colour NAME column (was grabbing the colour-id number). Imported wanted lists now render like a set's parts list — grouped by colour with part name, colour, qty and have/need per row and per group. Import shows an 'Imported N parts' confirmation.",
+    "MOCs gain a Planning status (for builds you're still designing / haven't gathered parts for) and show '% of plan' in the header — the wanted list is the MOC's plan, matched against the real parts you allocate. A MOC now reads like an unofficial set.",
+    "Note 1: opening a freshly added set auto-collapses Instructions, Box and Buys & notes (only Triage stays open).",
+    "Note 2: the 'just changed' part hint is now its own one-line, right-aligned row under the count (no longer wraps into the part name).",
+    "Note 3: opening a set scrolls to the top (was inheriting the list's scroll position).",
+    "Note 4: returning from a set/MOC restores your place in the sets list (was jumping back to the top).",
+    "Note 5: sets with no Rebrickable parts (multipacks like 66786) now show a clear explanation instead of an empty list.",
+    "Note 6: 'Yellowish Green' now groups under Green, not Yellow.",
+    "Note 7: bulk-move — in a set's parts Select mode you can move every selected found part to a MOC at once; the MOC picker defaults to the last MOC you used.",
+    "Note 8: the sets list sort gains an ↑ Asc / ↓ Desc toggle for Newest / Completion / Value.",
+  ]],
   ["0.33.0", "2026-06-17", [
     "Hunt mode → 'Find LEGO sets containing' now works for PRINTED / sticker parts too. Brickognize returns the BrickLink id (e.g. 65474pb04) which Rebrickable's direct lookup 404s on — it now resolves that id via Rebrickable's bricklink_id filter and lists the matching sets IN-APP (pick one → tracks the set + logs the part), instead of punting you to BrickLink to copy the set number by hand. The BrickLink link only shows now if the part is genuinely unindexed.",
   ]],
@@ -374,8 +386,8 @@ const COLOR_GROUPS = [
   ["Brown / Tan", ["brown", "tan", "nougat", "flesh", "umber", "sienna", "caramel"]],
   ["Red", ["red", "rust", "maroon", "scarlet"]],
   ["Orange", ["orange", "coral"]],
+  ["Green", ["green", "lime", "olive", "sand green", "yellowish green"]],
   ["Yellow", ["yellow", "bright light yellow", "cream"]],
-  ["Green", ["green", "lime", "olive", "sand green"]],
   ["Blue", ["blue", "azure", "turquoise", "teal", "aqua", "sand blue"]],
   ["Purple", ["purple", "violet", "lavender", "lilac"]],
   ["Pink", ["pink", "magenta", "rose"]],
@@ -662,7 +674,7 @@ const blobToDataURL = blob => new Promise((res, rej) => {
 const photoKey = id => `bt:photo:${id}`;
 const photoSrc = id => load(photoKey(id), null);
 const pdfKey = id => `bt:pdf:${id}`;
-const MOC_STATUS = [["building", "Building", "var(--yellow)"], ["built", "Built", "var(--green)"], ["disassembled", "Disassembled", "var(--dim)"]];
+const MOC_STATUS = [["planning", "Planning", "var(--blue)"], ["building", "Building", "var(--yellow)"], ["built", "Built", "var(--green)"], ["disassembled", "Disassembled", "var(--dim)"]];
 const mocStatus = s => MOC_STATUS.find(x => x[0] === s) || MOC_STATUS[0];
 const mocStats = m => {
   let pcs = 0; const sets = new Set();
@@ -1412,26 +1424,41 @@ function parseWantedList(text) {
       const id = (it.match(/<ITEMID>([^<]*)<\/ITEMID>/i) || [])[1];
       const col = (it.match(/<COLOR>([^<]*)<\/COLOR>/i) || [])[1];
       const qty = (it.match(/<MINQTY>([^<]*)<\/MINQTY>/i) || it.match(/<QTY>([^<]*)<\/QTY>/i) || [])[1];
-      if (id) out.push({ partNum: id.trim(), colorName: col ? `BL color ${col.trim()}` : "", qty: parseInt(qty) || 1 });
+      if (id) out.push({ partNum: id.trim(), name: "", colorName: col ? `BL color ${col.trim()}` : "", qty: parseInt(qty) || 1 });
     }
     return out;
   }
   const lines = t.split(/\r?\n/).filter(l => l.trim());
   if (!lines.length) return out;
   const sep = lines[0].includes("\t") ? "\t" : ",";
-  const split = l => l.split(sep).map(s => s.replace(/^"|"$/g, "").trim());
-  let pi = 0, ci = 1, qi = 2, start = 0;
+  // quote-aware split — PartName fields legitimately contain commas ("Brick, Modified 1 x 2…")
+  const split = l => {
+    const res = []; let cur = "", q = false;
+    for (const ch of l) {
+      if (ch === '"') { q = !q; continue; }
+      if (ch === sep && !q) { res.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    res.push(cur);
+    return res.map(s => s.trim());
+  };
+  let pi = 0, ni = -1, ci = -1, qi = -1, start = 0;
   const h = split(lines[0]).map(s => s.toLowerCase());
-  if (h.some(x => /part|element|design|blid|item/.test(x))) {
+  if (h.some(x => /part|element|design|item|colou?r|qty/.test(x))) {
     start = 1;
-    pi = h.findIndex(x => /part|element|design|blid|item/.test(x));
-    ci = h.findIndex(x => /colou?r/.test(x));
-    qi = h.findIndex(x => /qty|quantity|count|min/.test(x));
+    pi = h.findIndex(x => /^(bl)?item|design|^part ?(num|no|id)|element/.test(x));
+    if (pi < 0) pi = h.findIndex(x => /part|item|element|design/.test(x));
+    ni = h.findIndex(x => /part.?name|^name$/.test(x));               // part name, not colour name
+    ci = h.findIndex(x => /colou?r.?name/.test(x));                   // prefer the colour NAME column…
+    if (ci < 0) ci = h.findIndex(x => /colou?r/.test(x) && !/id$/.test(x)); // …never the colour-id number
+    qi = h.findIndex(x => /^min|qty|quantity|count/.test(x));
   }
+  if (pi < 0) pi = 0;
   for (let i = start; i < lines.length; i++) {
     const c = split(lines[i]); const partNum = (c[pi] || "").trim();
     if (!partNum) continue;
-    out.push({ partNum, colorName: ci >= 0 ? (c[ci] || "").trim() : "", qty: parseInt(c[qi >= 0 ? qi : 2]) || 1 });
+    out.push({ partNum, name: ni >= 0 ? (c[ni] || "").trim() : "",
+      colorName: ci >= 0 ? (c[ci] || "").trim() : "", qty: parseInt(c[qi >= 0 ? qi : 2]) || 1 });
   }
   return out;
 }
@@ -1449,17 +1476,22 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, onBack }) {
   const [wantColor, setWantColor] = useState("");
   const [wantQty, setWantQty] = useState("1");
   const pdfInput = useRef(null);
-  // NF2: have-count for a wanted line = real parts allocated whose part number matches
-  const haveFor = pn => (moc?.parts || []).reduce((a, x) => a + (String(x.partNumber) === String(pn) ? x.qty : 0), 0);
+  const [importMsg, setImportMsg] = useState("");
+  // NF2: have-count for a wanted line = real parts allocated whose part number matches. Base-match
+  // (strip print/mould suffix) so a BrickLink import number (3023) finds the Rebrickable part (3023b).
+  const haveFor = pn => (moc?.parts || []).reduce((a, x) => a + (String(x.partNumber) === String(pn) || partKey(x.partNumber) === partKey(pn) ? x.qty : 0), 0);
   const wanted = moc?.wanted || [];
   const wantTotal = wanted.reduce((a, w) => a + (w.qty || 0), 0);
   const wantHave = wanted.reduce((a, w) => a + Math.min(haveFor(w.partNum), w.qty || 0), 0);
   const wantPct = wantTotal ? Math.round((wantHave / wantTotal) * 100) : 0;
   const doImport = () => {
     const parsed = parseWantedList(importText);
-    if (!parsed.length) { alert("Couldn't find any parts in that text. Paste a BrickLink Studio (XML) or Rebrickable (CSV) parts export."); return; }
+    if (!parsed.length) { alert("Couldn't find any parts in that text. Paste a BrickLink Studio (XML) or Rebrickable / Studio (CSV) parts export."); return; }
+    const lots = parsed.length, pcs = parsed.reduce((a, w) => a + (w.qty || 0), 0);
     upsertMoc({ ...moc, wanted: [...wanted, ...parsed] });
     setImportText(""); setImportOpen(false);
+    setImportMsg(`Imported ${lots} part${lots === 1 ? "" : "s"} (${pcs} pcs).`);
+    setTimeout(() => setImportMsg(""), 4000);
   };
   const toggleGroup = id => setOpenGroups(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
@@ -1593,7 +1625,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, onBack }) {
   </div>`;
 
   return html`<div class="navin" key="moc-main">
-    <${Header} title=${moc.name} sub=${`${stats.pcs} real pcs · ${stats.sets} source set${stats.sets === 1 ? "" : "s"}`} onBack=${onBack} />
+    <${Header} title=${moc.name} sub=${`${stats.pcs} real pcs · ${stats.sets} source set${stats.sets === 1 ? "" : "s"}${wantTotal ? ` · ${wantPct}% of plan` : ""}`} onBack=${onBack} />
     <div class="card row" style="gap:14px">
       ${moc.photoIds?.[0] && photoSrc(moc.photoIds[0])
         ? html`<img style="width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid var(--line);flex-shrink:0" src=${photoSrc(moc.photoIds[0])}/>`
@@ -1617,13 +1649,34 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, onBack }) {
         <${Label}>Wanted parts (target build)${wantTotal ? ` · ${wantHave}/${wantTotal}` : ""}</${Label}>
         ${wantTotal > 0 && html`<span class="mono" style=${`font-weight:800;color:${wantPct >= 100 ? "var(--green)" : wantPct >= 50 ? "var(--yellow)" : "var(--dim)"}`}>${wantPct}%</span>`}
       </div>
-      ${wanted.length === 0 && html`<div class="dim" style="font-size:12px;margin-bottom:8px">Import the build's parts from BrickLink Studio (XML) or Rebrickable (CSV), or add part numbers below — then gather the real bricks with + Add parts. Have-counts match by part number.</div>`}
-      ${wanted.map((w, i) => { const have = haveFor(w.partNum), ok = have >= w.qty;
-        return html`<div key=${i} class="row" style="gap:8px;padding:6px 0;border-bottom:1px solid var(--line)">
-          <div class="ellip" style="flex:1;min-width:0;font-size:13px;font-weight:600">${w.partNum}${w.colorName ? html` <span class="dim">· ${w.colorName}</span>` : ""}</div>
-          <span class="mono" style=${`font-size:12px;font-weight:800;color:${ok ? "var(--green)" : "var(--yellow)"}`}>${Math.min(have, w.qty)}/${w.qty}</span>
-          <button class="step" style="width:30px;height:30px;font-size:11px;color:var(--red);border-color:var(--red)" onClick=${() => upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) })}>✕</button>
-        </div>`; })}
+      ${importMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin:6px 0">✓ ${importMsg}</div>`}
+      ${wanted.length === 0 && html`<div class="dim" style="font-size:12px;margin-bottom:8px">Import the build's parts from BrickLink Studio (XML) or a Studio/Rebrickable parts CSV, or add part numbers below — then gather the real bricks with + Add parts. The list groups by colour and counts have/need against the real parts you allocate.</div>`}
+      ${(() => {
+        if (!wanted.length) return null;
+        // group the wanted list by colour bucket so it reads like a set's parts list
+        const map = new Map();
+        wanted.forEach((w, i) => { const g = colorGroup(w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push({ w, i }); });
+        const entries = [...map.entries()].sort((a, b) => groupRank(a[0]).localeCompare(groupRank(b[0])));
+        return entries.map(([g, items]) => {
+          const gNeed = items.reduce((a, x) => a + (x.w.qty || 0), 0);
+          const gHave = items.reduce((a, x) => a + Math.min(haveFor(x.w.partNum), x.w.qty || 0), 0);
+          return html`<div key=${g} style="margin-bottom:6px">
+            <div class="row" style="justify-content:space-between;margin:10px 2px 4px">
+              <span class="label" style="margin:0">${g} · ${items.length}</span>
+              <span class="mono" style=${`font-size:11px;font-weight:800;color:${gHave >= gNeed ? "var(--green)" : "var(--dim)"}`}>${gHave}/${gNeed}</span>
+            </div>
+            ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty;
+              return html`<div key=${i} class="row" style=${`gap:8px;background:var(--panel);border:1px solid ${ok ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 9px;margin-bottom:5px;${ok ? "opacity:.7" : ""}`}>
+                <div style="flex:1;min-width:0">
+                  <div class="clamp2" style="font-size:13px;font-weight:600;line-height:1.25">${w.name || w.partNum}</div>
+                  <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}</div>
+                </div>
+                <span class="mono" style=${`font-size:12px;font-weight:800;color:${ok ? "var(--green)" : "var(--yellow)"}`}>${Math.min(have, w.qty)}/${w.qty}</span>
+                <button class="step" style="width:30px;height:30px;font-size:11px;color:var(--red);border-color:var(--red)" onClick=${() => upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) })}>✕</button>
+              </div>`; })}
+          </div>`;
+        });
+      })()}
       <div class="row" style="gap:6px;margin-top:10px">
         <input style="flex:1" name="bt-want-part" autocomplete="off" autocapitalize="characters" placeholder="Part # to want" value=${wantPart} onInput=${e => setWantPart(e.target.value)} />
         <input style="width:52px;text-align:center" inputmode="numeric" value=${wantQty} onInput=${e => setWantQty(e.target.value)} />
@@ -1733,6 +1786,13 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   const [newMoc, setNewMoc] = useState(false);
   const [wtb, setWtbRaw] = useState(() => load("bt:wtb", [])); // NF4 want-to-buy list
   const saveWtb = v => { setWtbRaw(v); save("bt:wtb", v); };
+  // #4: remember the list's scroll position so returning from a set/MOC lands where you were
+  // (the shared .content scroll is otherwise reset on remount). Stashed on the window across mounts.
+  useEffect(() => {
+    const restore = window.__btSetsScroll;
+    if (typeof restore === "number") requestAnimationFrame(() => { const c = document.querySelector(".content"); if (c) c.scrollTop = restore; });
+    return () => { const c = document.querySelector(".content"); if (c) window.__btSetsScroll = c.scrollTop; };
+  }, []);
   const [editingMerch, setEditingMerch] = useState(false); // merch edit sheet over the detail page
   // segment: sets | merch
   const [seg, setSegRaw] = useState(() => load("bt:sv:seg", "sets"));
@@ -1746,6 +1806,8 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   const toggleFilter = id => setFilterM(filterM.includes(id) ? filterM.filter(x => x !== id) : [...filterM, id]);
   const toggleTheme = t => setThemeM(themeM.includes(t) ? themeM.filter(x => x !== t) : [...themeM, t]);
   const [sort, setSortRaw] = useState(() => load("bt:sv:sort", "date"));
+  const [sortDir, setSortDirRaw] = useState(() => load("bt:sv:sortdir", "desc")); // #8 asc | desc
+  const setSortDir = v => { setSortDirRaw(v); save("bt:sv:sortdir", v); };
   const [view, setViewRaw] = useState(() => load("bt:sv:view", "flat")); // flat | bybuy | bytheme
   const [density, setDensityRaw] = useState(() => load("bt:sv:density", "detailed")); // detailed | compact
   const setDensity = v => { setDensityRaw(v); save("bt:sv:density", v); };
@@ -1807,11 +1869,12 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
     if (themeM.length) l = l.filter(e => themeM.includes(themeOf(e)));
     if (condF !== "all") l = l.filter(e => (e.condition === "new" ? "new" : "used") === condF);
     if (incompleteOnly) l = l.filter(e => (e.pct || 0) < 100);
-    return [...l].sort((a, b) =>
+    const dir = sortDir === "asc" ? -1 : 1; // base comparators are descending; flip for asc
+    return [...l].sort((a, b) => dir * (
       sort === "pct" ? b.pct - a.pct :
       sort === "value" ? bestVal(b) - bestVal(a) :
-      b.dateAdded - a.dateAdded);
-  }, [index, filterM, themeM, sort, allTriage, condF, incompleteOnly]);
+      b.dateAdded - a.dateAdded));
+  }, [index, filterM, themeM, sort, sortDir, allTriage, condF, incompleteOnly]);
 
   // by-buy view (v0.21): groups by CHANNEL — all Amazon together, all FB Marketplace together…
   // A set spanning channels appears under each; unlinked sets under No Buy (All segment only).
@@ -1980,8 +2043,10 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
         onClick=${() => setCondF(condF === "all" ? "used" : condF === "used" ? "new" : "all")} />
       <${Chip} key="c-inc" label="Incomplete" color="var(--yellow)" active=${incompleteOnly}
         onClick=${() => setIncompleteOnly(!incompleteOnly)} />
-      <${Chip} key="c-sort" label=${sort === "pct" ? "↓ Completion" : sort === "value" ? "↓ Value" : "↓ Newest"} color="var(--blue)" active
+      <${Chip} key="c-sort" label=${(sort === "pct" ? "Completion" : sort === "value" ? "Value" : "Newest")} color="var(--blue)" active
         onClick=${() => setSort(s => s === "date" ? "pct" : s === "pct" ? "value" : "date")} />
+      <${Chip} key="c-sortdir" label=${sortDir === "asc" ? "↑ Asc" : "↓ Desc"} color="var(--blue)" active=${false}
+        onClick=${() => setSortDir(sortDir === "asc" ? "desc" : "asc")} />
       ${filtersActive && html`<${Chip} key="c-clear" label="✕ Clear" color="var(--red)" active=${false}
         onClick=${() => { setFilterM(TRIAGE.map(t => t.id)); setThemeM([]); setCondF("all"); setIncompleteOnly(false); setOpenNav(null); }} />`}
     </div>
@@ -2274,14 +2339,17 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const [confirmDel, setConfirmDel] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [lastAct, setLastAct] = useState(null); // {id, applied, qty, ts} — tiny "just changed" hint under a row
+  // #3: opening a set always starts at the top (the shared .content kept the list's scroll position)
+  useEffect(() => { document.querySelector(".content")?.scrollTo({ top: 0 }); }, []);
   const [openColors, setOpenColors] = useState(() => new Set());
   const [moveP, setMoveP] = useState(null); // part row being pushed to a MOC
+  const [bulkMoc, setBulkMoc] = useState(false); // #7 bulk-move selected parts to a MOC (picker open)
   const [groupMode, setGroupModeRaw] = useState(() => load("bt:partgroup", "group")); // group | exact
   const setGroupMode = v => { setGroupModeRaw(v); save("bt:partgroup", v); };
   // accordion open state (item 3/5): collapsed by default when the set is New
   const initCond = condOfSet(load(`bt:set:${setNum}`, {}) || {});
   const ACC_IDS = ["value", "triage", "instr", "box", "meta"];
-  const [openAcc, setOpenAcc] = useState(() => new Set(initCond === "new" ? [] : ["triage", "instr", "box", "meta"]));
+  const [openAcc, setOpenAcc] = useState(() => new Set(initCond === "new" ? [] : ["triage"]));
   const toggleAcc = id => setOpenAcc(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allAccOpen = ACC_IDS.every(id => openAcc.has(id));
   // photo gallery (item 7): catalog image + BrickLink box image (hotlink-tested per set via onerror)
@@ -2317,6 +2385,25 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       img: p.img, qty });
     upsertMoc({ ...mo, parts, status: mo.status === "disassembled" ? "building" : mo.status });
     setMoveP(null);
+  };
+  // #7: bulk-move every selected part's available qty into one MOC in a single upsert
+  const doBulkMove = mocId => {
+    const mo = mocs.find(m => m.id === mocId);
+    if (!mo) return;
+    const parts = [...(mo.parts || [])];
+    for (const id of selIds) {
+      const p = rec.parts.find(x => x.id === id);
+      if (!p) continue;
+      const avail = Math.max(0, p.qtyFound - allocatedRow(mocs, setNum, p.id));
+      if (avail < 1) continue;
+      const i = parts.findIndex(a => a.setNum === setNum && a.partRowId === p.id);
+      if (i >= 0) parts[i] = { ...parts[i], qty: parts[i].qty + avail };
+      else parts.push({ id: `${Date.now()}${Math.random().toString(36).slice(2, 6)}${p.id}`, setNum, setName: rec.name,
+        partRowId: p.id, partNumber: p.partNumber, partName: p.partName, colorID: p.colorID, colorName: p.colorName, img: p.img, qty: avail });
+    }
+    upsertMoc({ ...mo, parts, status: mo.status === "disassembled" ? "building" : mo.status });
+    save("bt:lastMoc", mocId);
+    setBulkMoc(false); setSelMode(false); setSelIds(new Set());
   };
   if (!rec) return html`<div class="card">Set not found in storage. <button class="ghost" onClick=${onBack}>Back</button></div>`;
   const { pct, found, total } = completion(rec.parts);
@@ -2665,6 +2752,11 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
 
     <${MinifigSection} rec=${rec} change=${change} onView=${setViewPart} />
 
+    ${rec.parts.length === 0 && html`<div class="card" style="border-color:var(--yellow)">
+      <div style="font-weight:700;margin-bottom:4px">No individual parts for ${rec.setNum}</div>
+      <div class="dim" style="font-size:13px">Rebrickable lists this set with no part inventory — it's usually a multipack/bundle of separate sets (e.g. 66786 is three sets in one box). Add each contained set on its own to track and hunt their parts.</div>
+    </div>`}
+
     ${groups.map(([color, list]) => {
       const open = q.trim().length > 0 || openColors.has(color);
       // #7: spares don't count toward the group's have/need (unless Settings → count spares)
@@ -2748,6 +2840,9 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
         } return r; });
         setSelIds(new Set());
       }}>${allHave ? `Mark ${selIds.size} as not have` : `Mark ${selIds.size} as have (full qty)`}</button>
+      ${(() => { const movable = selParts.reduce((a, p) => a + Math.max(0, p.qtyFound - allocatedRow(mocs, setNum, p.id)), 0);
+        return html`<button class="ghost" style="margin-top:8px;color:var(--purple);border-color:var(--purple)" disabled=${!movable}
+          onClick=${() => setBulkMoc(true)}>→ Move ${movable || ""} found ${movable === 1 ? "part" : "parts"} to a MOC</button>`; })()}
     </div>`;
     })()}
 
@@ -2762,6 +2857,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     ${moveP && html`<${MoveToMocSheet} p=${moveP} mocs=${mocs} upsertMoc=${upsertMoc}
       available=${Math.max(0, moveP.qtyFound - allocatedRow(mocs, setNum, moveP.id))}
       onMove=${doMove} onClose=${() => setMoveP(null)} />`}
+    ${bulkMoc && html`<${BulkMocPicker} mocs=${mocs} upsertMoc=${upsertMoc} count=${selIds.size}
+      onPick=${doBulkMove} onClose=${() => setBulkMoc(false)} />`}
     ${galleryAt != null && html`<${SetGalleryViewer} photos=${photos} start=${galleryAt} defaultIdx=${defaultIdx}
       onSetDefault=${i => change(r => { r.imgDefault = photos[i].kind === "box" ? "box" : "rb"; return r; })}
       onClose=${() => setGalleryAt(null)} />`}
@@ -2832,7 +2929,8 @@ function MinifigSection({ rec, change, onView }) {
 }
 
 function MoveToMocSheet({ p, mocs, upsertMoc, available, onMove, onClose }) {
-  const [mocId, setMocId] = useState(mocs[0]?.id || "");
+  // #7: default to the last MOC moved into (falls back to the first) so rapid adds stay on one MOC
+  const [mocId, setMocId] = useState(() => { const last = load("bt:lastMoc", null); return mocs.some(m => m.id === last) ? last : (mocs[0]?.id || ""); });
   const [qty, setQty] = useState(1);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(mocs.length === 0);
@@ -2872,8 +2970,36 @@ function MoveToMocSheet({ p, mocs, upsertMoc, available, onMove, onClose }) {
           <button class="ghost" style="flex:1" onClick=${() => setQty(max)}>All ${max}</button>
         </div>
         <div style="height:12px"></div>
-        <button class="btn" disabled=${!mocId || creating} onClick=${() => onMove(p, mocId, Math.min(qty, max))}>Move ${Math.min(qty, max)} → MOC</button>
+        <button class="btn" disabled=${!mocId || creating} onClick=${() => { save("bt:lastMoc", mocId); onMove(p, mocId, Math.min(qty, max)); }}>Move ${Math.min(qty, max)} → MOC</button>
       </div>`}
+    </div>
+  </div></${Portal}>`;
+}
+
+// #7: pick one MOC to receive every selected part's available qty (default = last MOC used)
+function BulkMocPicker({ mocs, upsertMoc, count, onPick, onClose }) {
+  const [mocId, setMocId] = useState(() => { const last = load("bt:lastMoc", null); return mocs.some(m => m.id === last) ? last : (mocs[0]?.id || ""); });
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(mocs.length === 0);
+  function createAndSelect() {
+    const m = { id: String(Date.now()), name: newName.trim(), notes: "", photoIds: [], pdfs: [], status: "building", parts: [], dateAdded: Date.now() };
+    upsertMoc(m); setMocId(m.id); setCreating(false); setNewName("");
+  }
+  return html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div class="sheet">
+      <${Header} title=${`Move ${count} parts → MOC`} onBack=${onClose} />
+      <div class="dim" style="font-size:13px;margin-bottom:10px">Every found copy of the selected parts (not already in a MOC) moves to this MOC.</div>
+      <${Label}>Destination MOC</${Label}>
+      ${!creating && html`<select value=${mocId} onChange=${e => { if (e.target.value === "__new") setCreating(true); else setMocId(e.target.value); }}>
+        ${mocs.map(m => html`<option value=${m.id}>${m.name}</option>`)}
+        <option value="__new">＋ New MOC…</option>
+      </select>`}
+      ${creating && html`<div class="row" style="gap:8px">
+        <input placeholder="MOC name" value=${newName} onInput=${e => setNewName(e.target.value)} />
+        <button class="step plus" style="width:54px" disabled=${!newName.trim()} onClick=${createAndSelect}>✓</button>
+      </div>`}
+      <div style="height:12px"></div>
+      <button class="btn" disabled=${!mocId || creating} onClick=${() => onPick(mocId)}>Move to MOC</button>
     </div>
   </div></${Portal}>`;
 }
@@ -2883,9 +3009,10 @@ function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = f
   const full = p.qtyFound >= p.qtyNeeded;
   const done = full;
   const allocQty = (alloc || []).reduce((a, x) => a + x.qty, 0);
-  // #1: tiny "just changed" hint so a tap is visibly confirmed (e couldn't tell if + registered)
-  const recentLine = recent && html`<div style=${`font-size:10px;font-weight:800;margin-top:2px;color:${recent.applied > 0 ? "var(--green)" : "var(--red)"}`}>
-    ${recent.applied > 0 ? `+${recent.applied}` : recent.applied} · just changed → ${recent.qty}/${recent.needed}</div>`;
+  // #1: tiny "just changed" hint so a tap is visibly confirmed (e couldn't tell if + registered).
+  // Its own one-line div under the row, right-aligned beneath the count (no wrapping into the name).
+  const recentLine = recent && html`<div style=${`font-size:10px;font-weight:800;margin:1px 8px 0 0;text-align:right;white-space:nowrap;color:${recent.applied > 0 ? "var(--green)" : "var(--red)"}`}>
+    ${recent.applied > 0 ? `+${recent.applied}` : recent.applied} → ${recent.qty}/${recent.needed}</div>`;
   // #3: tapping the part image opens it full-size (stopPropagation so it never triggers the row toggle)
   const imgEl = p.img
     ? html`<img class="partimg" src=${p.img} loading="lazy" onClick=${ev => { ev.stopPropagation(); onView?.(p); }}/>`
@@ -2896,38 +3023,40 @@ function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = f
   if (selMode) {
     // #4/#5: select mode keeps − / qty / + steppers; the checkbox batch-selects, and tapping the
     // body marks the row all-present (greys it out — tap again to undo). Everything autosaves.
-    return html`
-      <div class="row" style=${`background:var(--panel);border:1px solid ${full ? "var(--green)" : selected ? "var(--blue)" : "var(--line)"};border-radius:12px;padding:8px 10px;margin-bottom:6px;opacity:${full ? .55 : 1}`}>
+    return html`<div style="margin-bottom:6px">
+      <div class="row" style=${`background:var(--panel);border:1px solid ${full ? "var(--green)" : selected ? "var(--blue)" : "var(--line)"};border-radius:12px;padding:8px 10px;opacity:${full ? .55 : 1}`}>
         <button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${selected ? "var(--blue)" : "var(--dim)"};background:${selected ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${onSel}>${selected ? "✓" : ""}</button>
         ${imgEl}
         <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => onToggleFull?.(p)}>
           <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
           <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber}${spareTag}</div>
           ${allocLine}
-          ${recentLine}
         </div>
         <button class="step" style="width:34px" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>
         <div class="mono" style=${`font-size:14px;font-weight:700;min-width:40px;text-align:center;color:${full ? "var(--green)" : "var(--text)"}`}>${p.qtyFound}/${p.qtyNeeded}</div>
         <button class="step plus" style="width:34px" disabled=${full} onClick=${() => bump(p.id, +1)}>+</button>
-      </div>`;
+      </div>
+      ${recentLine}
+    </div>`;
   }
   const numCol = isRem ? (full ? "var(--green)" : "var(--yellow)") : (done ? "var(--green)" : "var(--text)");
   const border = (isRem ? full : done) ? "var(--green)" : "var(--line)";
   const opacity = isRem ? 1 : (done ? .65 : 1);
-  return html`
-    <div class="row" style=${`background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;margin-bottom:6px;opacity:${opacity}`}>
+  return html`<div style="margin-bottom:6px">
+    <div class="row" style=${`background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;opacity:${opacity}`}>
       ${imgEl}
       <div style="flex:1;min-width:0" onClick=${() => bump(p.id, full ? -p.qtyNeeded : p.qtyNeeded - p.qtyFound)}>
         <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
         <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber} · <span style="color:var(--yellow)">${partRate(p).label}</span>${spareTag}</div>
         ${allocLine}
-        ${recentLine}
       </div>
       ${onMove && p.qtyFound > 0 && html`<button class="step" style="width:34px;color:var(--purple);border-color:var(--purple)" onClick=${onMove}>→</button>`}
       <button class="step" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>
       <div class="mono" style=${`font-size:14px;font-weight:700;min-width:40px;text-align:center;color:${numCol}`}>${p.qtyFound}/${p.qtyNeeded}</div>
       <button class="step plus" disabled=${full} onClick=${() => bump(p.id, +1)}>+</button>
-    </div>`;
+    </div>
+    ${recentLine}
+  </div>`;
 }
 
 // #3 full-size part image with its number / colour + a BrickLink lookup (disambiguate lookalike parts)
