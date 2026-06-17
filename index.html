@@ -89,8 +89,16 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.31.0";
+const APP_VERSION = "0.32.0";
 const CHANGELOG = [
+  ["0.32.0", "2026-06-17", [
+    "#1 Delete set now has a Cancel button — the confirm step shows Cancel + Delete permanently side by side, so an accidental tap on 'Delete set…' is easy to back out of.",
+    "#1 ↺ Reset chip in a set's parts filter row — wipes every part count back to 0 (or the MOC-allocated floor) after a confirm, so you can recount from scratch. Also clears Built.",
+    "#1 Tap confirmation: after you +/− a part (or tap a row to mark it), a tiny green/red 'just changed → x/y' line shows under that row — no more re-counting because you couldn't tell if a tap registered.",
+    "#2 Minifigs moved directly under the parts filter (above the colour groups) — easy to miss before, especially in sets like 43177 where figs hold 'normal' parts.",
+    "#3 Instructions & Box moved to the BOTTOM of the parts list, below the colour groups.",
+    "#4 Est. value: renamed from 'Est. value — BrickLink' and gained Market price + Last checked fields above the manual BrickLink (As set / Parted out) fields. Setting a market price auto-stamps today's date.",
+  ]],
   ["0.31.0", "2026-06-17", [
     "#1 BrickLink price-guide link fixed — it now opens catalogPG.asp (the price-guide table) directly instead of the v2 catalog page whose #T=P tab anchor often failed to switch on mobile.",
     "#2 ♻️ Donor / spare set — a new flag (separate from triage) in a set's Triage section: mark a set kept INTACT in your donor box, available to part out or sell later but not broken down. Shows a Donor badge on cards. Kept OUT of Sorting mode's part-hunt by default (it's a parts source, not a set you're filling); Settings → 'Hunt donor sets' to include them.",
@@ -2243,6 +2251,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const [showSpares, setShowSpares] = useState(false);
   const [hideFound, setHideFound] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [lastAct, setLastAct] = useState(null); // {id, applied, qty, ts} — tiny "just changed" hint under a row
   const [openColors, setOpenColors] = useState(() => new Set());
   const [moveP, setMoveP] = useState(null); // part row being pushed to a MOC
   const [groupMode, setGroupModeRaw] = useState(() => load("bt:partgroup", "group")); // group | exact
@@ -2293,14 +2303,34 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const rstats = remainingStats(rec);
 
   const change = mut => setRec(prev => { const next = mut(structuredClone(prev)); persistSet(next); return next; });
-  const bump = (id, d) => change(r => {
-    const p = r.parts.find(x => x.id === id);
-    if (p) {
-      const floor = (rowAlloc.get(id) || []).reduce((a, x) => a + x.qty, 0);
-      p.qtyFound = Math.max(floor, Math.max(0, Math.min(p.qtyNeeded, p.qtyFound + d)));
-    }
-    return r;
-  });
+  // #1: record the applied delta so the row can show a tiny "just changed → x/y" hint (e kept
+  // re-counting because she couldn't tell whether a tap had registered).
+  const bump = (id, d) => {
+    let act = null;
+    // delta computed INSIDE the updater (against the latest pending clone) so rapid +1 taps
+    // accumulate correctly; capture the applied result for the "just changed" hint.
+    change(r => {
+      const p = r.parts.find(x => x.id === id);
+      if (p) {
+        const floor = (rowAlloc.get(id) || []).reduce((a, x) => a + x.qty, 0);
+        const before = p.qtyFound;
+        p.qtyFound = Math.max(floor, Math.max(0, Math.min(p.qtyNeeded, before + d)));
+        if (p.qtyFound !== before) act = { id, applied: p.qtyFound - before, qty: p.qtyFound, needed: p.qtyNeeded, ts: Date.now() };
+      }
+      return r;
+    });
+    if (act) setLastAct(act);
+  };
+  // #1: reset every part count so e can recount from scratch — back to 0, or the MOC-allocated
+  // floor so existing allocations stay valid. Also clears Built (a recount supersedes it).
+  const resetCounts = () => {
+    change(r => {
+      for (const p of r.parts) { const floor = (rowAlloc.get(p.id) || []).reduce((a, x) => a + x.qty, 0); p.qtyFound = floor; }
+      if (r.built) { r.built = false; delete r.builtFill; }
+      return r;
+    });
+    setLastAct(null); setConfirmReset(false);
+  };
   // #5: tap a row in select mode → mark all present; tap again → back to the MOC-allocated floor (or 0)
   const toggleFull = p => change(r => {
     const x = r.parts.find(y => y.id === p.id);
@@ -2453,8 +2483,21 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
         onClick=${() => setOpenAcc(allAccOpen ? new Set() : new Set(ACC_IDS))}>${allAccOpen ? "⌃ Collapse all" : "⌄ Expand all"}</button>
     </div>
 
-    <${Acc} title="Est. value — BrickLink" summary=${[rec.valueSet ? `Set ${money(rec.valueSet)}` : null, rec.valuePartOut ? `Parts ${money(rec.valuePartOut)}` : null].filter(Boolean).join(" · ")}
+    <${Acc} title="Est. value" summary=${[rec.marketPrice ? `Market ${money(rec.marketPrice)}` : null, rec.valueSet ? `Set ${money(rec.valueSet)}` : null, rec.valuePartOut ? `Parts ${money(rec.valuePartOut)}` : null].filter(Boolean).join(" · ")}
       open=${openAcc.has("value")} onToggle=${() => toggleAcc("value")}>
+      <div class="row" style="gap:10px;margin-bottom:10px">
+        <div style="flex:1">
+          <div style="font-size:11px;font-weight:700;color:var(--green);margin-bottom:4px">Market price</div>
+          <input inputmode="decimal" placeholder="—" value=${rec.marketPrice ?? ""}
+            onChange=${e => change(r => { const v = parseFloat(e.target.value); r.marketPrice = isNaN(v) || v <= 0 ? null : v; if (r.marketPrice != null && !r.marketChecked) r.marketChecked = new Date().toISOString().slice(0, 10); return r; })} />
+        </div>
+        <div style="flex:1">
+          <div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">Last checked</div>
+          <input type="date" value=${rec.marketChecked || ""}
+            onChange=${e => change(r => { r.marketChecked = e.target.value || null; return r; })} />
+        </div>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:var(--dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">BrickLink — manual</div>
       <div class="row" style="gap:10px">
         <div style="flex:1">
           <div style="font-size:11px;font-weight:700;color:var(--yellow);margin-bottom:4px">As set (used)</div>
@@ -2562,8 +2605,6 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
         onInput=${e => change(r => { r.notes = e.target.value; return r; })}></textarea>
     </${Acc}>
 
-    <${MinifigSection} rec=${rec} change=${change} onView=${setViewPart} />
-
     <div class="card" style="padding:12px">
       <input placeholder="Filter parts (name / number / colour)" value=${q} onInput=${e => setQ(e.target.value)} />
       <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
@@ -2582,7 +2623,13 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
             // #5: entering select mode expands every part group so all rows are reachable to select
             if (entering) setOpenColors(new Set(["__acc", ...groups.map(g => g[0])]));
           }} />
+        <${Chip} label="↺ Reset" color="var(--red)" active=${false} onClick=${() => setConfirmReset(v => !v)} />
       </div>
+      ${confirmReset && html`<div class="row" style="gap:8px;margin-top:10px;align-items:center">
+        <span class="dim" style="font-size:12px;flex:1">Reset every part count to recount? (back to 0, or the MOC-allocated floor)</span>
+        <button class="ghost" style="width:auto;padding:8px 12px" onClick=${() => setConfirmReset(false)}>Cancel</button>
+        <button class="btn red" style="width:auto;padding:8px 14px" onClick=${resetCounts}>Reset</button>
+      </div>`}
       ${logMode === "remaining" && html`<div class="row" style="gap:8px;margin-top:10px;align-items:center">
         <span class="dim" style="font-size:12px;flex:1">Pieces missing from this set (never had)</span>
         <button class="step" style="width:38px;height:38px" disabled=${(rec.missingCount || 0) <= 0}
@@ -2594,6 +2641,31 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       </div>
       <div class="dim" style="font-size:11px;margin-top:6px">In Remaining mode you tick OFF parts as you pull them — what's left stays ticked. Yellow = left in set · purple = parted out · red = missing.</div>`}
     </div>
+
+    <${MinifigSection} rec=${rec} change=${change} onView=${setViewPart} />
+
+    ${groups.map(([color, list]) => {
+      const open = q.trim().length > 0 || openColors.has(color);
+      // #7: spares don't count toward the group's have/need (unless Settings → count spares)
+      const inclSpares = countSpares();
+      const counted = list.filter(p => inclSpares || !p.isSpare);
+      const f = counted.reduce((a, p) => a + Math.min(p.qtyFound, p.qtyNeeded), 0);
+      const t = counted.reduce((a, p) => a + p.qtyNeeded, 0);
+      return html`<div style="margin-bottom:8px">
+        <button class="row" onClick=${() => toggleColor(color)}
+          style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
+          <span class="label" style="margin:0">${color} · ${list.length}</span>
+          <span class="row" style="gap:10px">
+            <span class="mono" style=${`font-size:12px;font-weight:700;color:${f >= t ? "var(--green)" : "var(--dim)"}`}>${f}/${t}</span>
+            <span class="dim">${open ? "▾" : "▸"}</span>
+          </span>
+        </button>
+        ${open && html`<div style="margin-top:6px">${list.map(p => html`<${PartRow} key=${(selMode ? "s-" : "n-") + p.id} p=${p} bump=${bump}
+          alloc=${rowAlloc.get(p.id)} onMove=${() => setMoveP(p)} onView=${() => setViewPart(p)} mode=${logMode}
+          selMode=${selMode} selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)} onToggleFull=${toggleFull}
+          recent=${lastAct && lastAct.id === p.id ? lastAct : null} />`)}</div>`}
+      </div>`;
+    })}
 
     ${(() => {
       const accOpen = q.trim().length > 0 || openColors.has("__acc");
@@ -2636,28 +2708,6 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       </div>`;
     })()}
 
-    ${groups.map(([color, list]) => {
-      const open = q.trim().length > 0 || openColors.has(color);
-      // #7: spares don't count toward the group's have/need (unless Settings → count spares)
-      const inclSpares = countSpares();
-      const counted = list.filter(p => inclSpares || !p.isSpare);
-      const f = counted.reduce((a, p) => a + Math.min(p.qtyFound, p.qtyNeeded), 0);
-      const t = counted.reduce((a, p) => a + p.qtyNeeded, 0);
-      return html`<div style="margin-bottom:8px">
-        <button class="row" onClick=${() => toggleColor(color)}
-          style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
-          <span class="label" style="margin:0">${color} · ${list.length}</span>
-          <span class="row" style="gap:10px">
-            <span class="mono" style=${`font-size:12px;font-weight:700;color:${f >= t ? "var(--green)" : "var(--dim)"}`}>${f}/${t}</span>
-            <span class="dim">${open ? "▾" : "▸"}</span>
-          </span>
-        </button>
-        ${open && html`<div style="margin-top:6px">${list.map(p => html`<${PartRow} key=${(selMode ? "s-" : "n-") + p.id} p=${p} bump=${bump}
-          alloc=${rowAlloc.get(p.id)} onMove=${() => setMoveP(p)} onView=${() => setViewPart(p)} mode=${logMode}
-          selMode=${selMode} selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)} onToggleFull=${toggleFull} />`)}</div>`}
-      </div>`;
-    })}
-
     ${selMode && (() => {
       // #5: detect the selection's state — if everything picked is already fully have, flip the action
       // to "mark as not have" (down to any MOC-allocated floor); otherwise mark them all have.
@@ -2683,7 +2733,10 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     <div style="height:8px"></div>
     ${!confirmDel
       ? html`<button class="ghost" style="color:var(--red);border-color:var(--red)" onClick=${() => setConfirmDel(true)}>Delete set…</button>`
-      : html`<button class="btn red" onClick=${onDelete}>Tap again to permanently delete</button>`}
+      : html`<div class="row" style="gap:8px">
+          <button class="ghost" style="flex:1" onClick=${() => setConfirmDel(false)}>Cancel</button>
+          <button class="btn red" style="flex:2" onClick=${onDelete}>Delete permanently</button>
+        </div>`}
     <div style="height:16px"></div>
     ${moveP && html`<${MoveToMocSheet} p=${moveP} mocs=${mocs} upsertMoc=${upsertMoc}
       available=${Math.max(0, moveP.qtyFound - allocatedRow(mocs, setNum, moveP.id))}
@@ -2804,11 +2857,14 @@ function MoveToMocSheet({ p, mocs, upsertMoc, available, onMove, onClose }) {
   </div></${Portal}>`;
 }
 
-function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = false, onSel, onToggleFull, mode = "find" }) {
+function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = false, onSel, onToggleFull, mode = "find", recent = null }) {
   const isRem = mode === "remaining";
   const full = p.qtyFound >= p.qtyNeeded;
   const done = full;
   const allocQty = (alloc || []).reduce((a, x) => a + x.qty, 0);
+  // #1: tiny "just changed" hint so a tap is visibly confirmed (e couldn't tell if + registered)
+  const recentLine = recent && html`<div style=${`font-size:10px;font-weight:800;margin-top:2px;color:${recent.applied > 0 ? "var(--green)" : "var(--red)"}`}>
+    ${recent.applied > 0 ? `+${recent.applied}` : recent.applied} · just changed → ${recent.qty}/${recent.needed}</div>`;
   // #3: tapping the part image opens it full-size (stopPropagation so it never triggers the row toggle)
   const imgEl = p.img
     ? html`<img class="partimg" src=${p.img} loading="lazy" onClick=${ev => { ev.stopPropagation(); onView?.(p); }}/>`
@@ -2827,6 +2883,7 @@ function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = f
           <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
           <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber}${spareTag}</div>
           ${allocLine}
+          ${recentLine}
         </div>
         <button class="step" style="width:34px" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>
         <div class="mono" style=${`font-size:14px;font-weight:700;min-width:40px;text-align:center;color:${full ? "var(--green)" : "var(--text)"}`}>${p.qtyFound}/${p.qtyNeeded}</div>
@@ -2843,6 +2900,7 @@ function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = f
         <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
         <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber} · <span style="color:var(--yellow)">${partRate(p).label}</span>${spareTag}</div>
         ${allocLine}
+        ${recentLine}
       </div>
       ${onMove && p.qtyFound > 0 && html`<button class="step" style="width:34px;color:var(--purple);border-color:var(--purple)" onClick=${onMove}>→</button>`}
       <button class="step" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>

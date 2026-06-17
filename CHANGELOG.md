@@ -8,6 +8,17 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.32.0 — 2026-06-17
+
+- **#1 Delete set — Cancel button.** The confirm step now shows **Cancel** alongside **Delete permanently** (was a single "Tap again to permanently delete" with no way back), so an accidental tap on "Delete set…" no longer risks a second reflex tap deleting the set.
+- **#1 Reset part counts.** A **↺ Reset** chip in a set's parts filter row wipes every part count back to 0 (or the MOC-allocated floor, so allocations stay valid) after a confirm — for recounting from scratch. Also clears the Built flag.
+- **#1 Tap confirmation.** After you +/− a part (or tap a row to mark it have/clear), a tiny green/red **"just changed → x/y"** line appears under that row. Fixes re-counting because you couldn't tell whether a tap had registered. *(A full app-wide action history is noted as a possible follow-up.)*
+- **#2 Minifigs moved.** The Minifigs section now sits **directly under the parts filter**, above the colour groups — it was easy to miss below the list, especially in sets like Belle's Storybook (43177) where minifigs carry "normal" parts.
+- **#3 Instructions & Box moved.** The 📖 Instructions & Box group now sits at the **bottom** of the parts list, below the colour groups.
+- **#4 Est. value — market price.** The value accordion is renamed from "Est. value — BrickLink" to **"Est. value"** and gains **Market price** + **Last checked** fields above the manual BrickLink (As set / Parted out) fields. Entering a market price auto-stamps today's date.
+
+-----
+
 ## v0.31.0 — 2026-06-17
 
 - **#1 BrickLink price-guide link fixed.** The set-detail "BrickLink price guide ↗" link now opens `catalogPG.asp?S=<num>` — the price-guide table directly — instead of the v2 `catalogitem.page#T=P`, whose tab anchor often failed to switch on mobile (landing on the catalog tab).
