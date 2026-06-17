@@ -8,6 +8,18 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.31.0 — 2026-06-17
+
+- **#1 BrickLink price-guide link fixed.** The set-detail "BrickLink price guide ↗" link now opens `catalogPG.asp?S=<num>` — the price-guide table directly — instead of the v2 `catalogitem.page#T=P`, whose tab anchor often failed to switch on mobile (landing on the catalog tab).
+- **#2 ♻️ Donor / spare set flag.** A new flag, separate from triage, in a set's Triage section. Mark a set kept **intact** in your donor box — available to part out or sell later if the price is right, but not broken down into a loose-parts list. Shows a `♻️ Donor` badge on set cards. Kept **out of Sorting mode's part-hunt by default** (a donor set is a parts *source*, not one you're filling); Settings → Sorting → "Hunt donor sets" includes them. A 🎯 target set is always hunted regardless.
+- **#3 Scan → set for printed parts.** Scanning a printed/sticker part Rebrickable can't resolve (e.g. `65474pb04`) no longer dead-ends: Sorting mode offers a BrickLink **"find which sets have this part"** link (`catalogItemIn.asp?P=…&in=S`), and Add-set's scan does the same when Brickognize returns a part instead of a set. The part-image viewer gains an **"In which sets ↗"** link too.
+- **Scan match — stickered/printed parts.** Brickognize returns the *applied* variant (`30350bpb187`), but a set's Rebrickable inventory lists the plain mould (`30350b`). Scans now **base-match** (strip the trailing print/pattern suffix + mould letter), so the sticker-applied tile in hand logs against the tile the set needs. Applies to 🎯 target auto-log and the cross-set search.
+- **Sticker sheets hidden.** The loose "sticker sheet" inventory row is dropped from parts lists and completion % by default — you buy bulk with stickers already applied, so it was noise. Toggle in Settings → Completion %. The stickered tile itself still counts normally.
+- **Parts list ordering.** Colour groups now sort **alphabetically** (Other last) instead of the old fixed Transparent→Pink order — no more hunting for where White landed.
+- **Scan UI.** Result thumbnails are larger and **tap-to-enlarge**; added a note that BrickLink renders parts as grey line-art (colour isn't shown).
+
+-----
+
 ## v0.30.0 — 2026-06-16
 
 - **#1 Link existing set / merch to a buy.** A buy's detail page now lets you attach an *existing* set or merch item that currently belongs to no buy. `+ Link existing set` / `+ Link existing merch` (each with a count) appear only when there's something unlinked; tapping opens a picker showing just those orphan items, and the list shrinks live as you link them.

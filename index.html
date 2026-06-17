@@ -89,8 +89,17 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.30.0";
+const APP_VERSION = "0.31.0";
 const CHANGELOG = [
+  ["0.31.0", "2026-06-17", [
+    "#1 BrickLink price-guide link fixed — it now opens catalogPG.asp (the price-guide table) directly instead of the v2 catalog page whose #T=P tab anchor often failed to switch on mobile.",
+    "#2 ♻️ Donor / spare set — a new flag (separate from triage) in a set's Triage section: mark a set kept INTACT in your donor box, available to part out or sell later but not broken down. Shows a Donor badge on cards. Kept OUT of Sorting mode's part-hunt by default (it's a parts source, not a set you're filling); Settings → 'Hunt donor sets' to include them.",
+    "#3 Scan → set, printed parts: scanning a printed/sticker part Rebrickable can't resolve (e.g. 65474pb04) no longer dead-ends — Sorting offers a BrickLink 'find which sets have this part' link, and Add-set's scan does the same when it returns a part instead of a set. The part image viewer gains an 'In which sets ↗' link.",
+    "SCAN MATCH: stickered/printed parts now match the plain tile a set needs — scanning 30350bpb187 (sticker applied) logs against the set's 30350b. Both 🎯 target auto-log and the cross-set search base-match (strips the print/pattern suffix).",
+    "STICKERS: sticker-sheet rows are hidden from parts lists and completion % by default (you apply stickers in bulk, so the loose sheet was noise). Toggle in Settings → Completion %. The stickered tile itself still counts.",
+    "PARTS LIST: colour groups now sort alphabetically (Other last) instead of the old fixed Transparent→Pink order — no more hunting for where White landed.",
+    "SCAN UI: result thumbnails are larger and tap-to-enlarge; added a note that BrickLink renders parts as grey line-art (colour isn't shown).",
+  ]],
   ["0.30.0", "2026-06-16", [
     "#1 Buys: a buy's detail page can now LINK an existing set or merch that isn't tied to any buy — '+ Link existing set / merch' (with a count) appears only when there's something unlinked, opening a picker of just the orphan items; tap to attach (the list shrinks live).",
     "#2 Minifig parts (hair, torsos, etc.) no longer double up in the main parts list — the set-parts fetch now passes inc_minifig_parts=0, so they live only in the Minifigs accordion. Existing sets need a re-track to drop already-imported minifig rows.",
@@ -365,7 +374,9 @@ function colorGroup(name) {
   for (const [g, keys] of COLOR_GROUPS) if (keys.some(k => n.includes(k))) return g;
   return "Other";
 }
-const groupRank = g => { const i = COLOR_GROUPS.findIndex(([n]) => n === g); return i === -1 ? 999 : i; };
+// colour groups list alphabetically (e was confused by the old fixed Transparent→Pink order);
+// "Other" is always pinned last.
+const groupRank = g => g === "Other" ? "￿" : g;
 
 // part value heuristic — avg price guide. Ordered high→low; first hit wins (name OR colour).
 // Keyword map is a first-guess like COLOR_GROUPS — refine from real use.
@@ -433,12 +444,29 @@ function isSeparator(p) {
   const n = (p.partName || "").toLowerCase();
   return SEPARATOR_PARTS.has(p.partNumber) || n.includes("separator");
 }
+// Sticker sheets: e buys bulk with stickers ALREADY applied to the tiles, so the loose
+// "sticker sheet" inventory row is noise. Hidden from the parts list + % by default (toggle in
+// Settings, like spares). The applied tile itself is a normal part counted as usual.
+function isStickerSheet(p) { return /sticker/i.test(p.partName || ""); }
+function hideStickers() { return load("bt:hideStickers", true); }
+// excluded from inventory/% entirely: separators always; sticker sheets when the setting is on.
+function isExcludedPart(p) { return isSeparator(p) || (hideStickers() && isStickerSheet(p)); }
+// Base-part matching for scans: Brickognize returns the PRINTED / sticker-applied variant
+// (e.g. "30350bpb187"), but a set's Rebrickable inventory lists the plain mould ("30350b").
+// Strip the trailing print/pattern suffix (pb187 / pr0001 / pat0001) and a trailing mould letter
+// so the applied-sticker tile in hand matches the base tile the set needs.
+const partKey = n => (n || "").toLowerCase().replace(/p[a-z]+\d+$/, "").replace(/[a-z]$/, "");
+const partMatches = (p, id) => !!id && (p.partNumber === id || partKey(p.partNumber) === partKey(id));
+// BrickLink "this part appears in which sets" — the reliable way to ID the set behind a printed
+// part Rebrickable can't resolve (e's hint). e.g. catalogItemIn.asp?P=65474pb04&in=S
+const blPartInSets = id => `https://www.bricklink.com/catalogItemIn.asp?P=${encodeURIComponent(id || "")}&in=S`;
+
 // #10: spares are excluded from completion % by default; Settings can opt in (bt:countSpares).
 function countSpares() { return !!load("bt:countSpares", false); }
 function completion(parts, includeSpares = countSpares()) {
   let need = 0, found = 0;
   for (const p of parts) {
-    if (isSeparator(p)) continue;
+    if (isExcludedPart(p)) continue;
     if (p.isSpare && !includeSpares) continue;
     need += p.qtyNeeded; found += Math.min(p.qtyFound, p.qtyNeeded);
   }
@@ -457,11 +485,13 @@ const lastBulkBuyOf = (buys, index) => {
   }
   return best || bulks[bulks.length - 1];
 };
-const blHref = n => `https://www.bricklink.com/v2/catalog/catalogitem.page?S=${encodeURIComponent(n)}#T=P`;
+// price guide: the v2 catalogitem.page#T=P anchor often lands on the catalog tab (esp. on mobile)
+// instead of the price guide — catalogPG.asp opens the price-guide table directly. (#1 fix)
+const blHref = n => `https://www.bricklink.com/catalogPG.asp?S=${encodeURIComponent(n)}`;
 const partsVal = parts => {
   let foundQty = 0, foundVal = 0, fullQty = 0, fullVal = 0;
   for (const p of parts) {
-    if (isSeparator(p)) continue;
+    if (isExcludedPart(p)) continue;
     const r = partRate(p).rate, f = Math.min(p.qtyFound, p.qtyNeeded);
     foundQty += f; foundVal += r * f; fullQty += p.qtyNeeded; fullVal += r * p.qtyNeeded;
   }
@@ -469,10 +499,10 @@ const partsVal = parts => {
 };
 const indexEntry = rec => {
   const { found, total, pct } = completion(rec.parts);
-  return { setNum: rec.setNum, name: rec.name, year: rec.year, idxVer: 3,
+  return { setNum: rec.setNum, name: rec.name, year: rec.year, idxVer: 4,
     img: rec.imgDefault === "box" ? blBoxImg(rec.setNum) : rec.img, triage: rec.triage,
     instructions: rec.instructions, found, total, pct, dateAdded: rec.dateAdded, buyIds: rec.buyIds || [],
-    theme: rec.theme || null, bookletQty: (rec.booklets || []).length,
+    theme: rec.theme || null, bookletQty: (rec.booklets || []).length, donor: !!rec.donor,
     condition: condOfSet(rec), built: !!rec.built,
     pricePaid: rec.pricePaid || 0, rrp: rec.rrp || 0, boxHas: !!rec.box?.has,
     valueSet: rec.valueSet || null, valuePartOut: rec.valuePartOut || null, ...partsVal(rec.parts) };
@@ -661,7 +691,7 @@ const RemainingRing = ({ needed, remaining, parted, missing, size = 64 }) => {
 function remainingStats(rec) {
   let needed = 0, remaining = 0;
   for (const p of rec.parts) {
-    if (isSeparator(p) || p.isSpare) continue;
+    if (isExcludedPart(p) || p.isSpare) continue;
     needed += p.qtyNeeded;
     remaining += Math.min(Math.max(0, p.qtyFound), p.qtyNeeded);
   }
@@ -849,6 +879,7 @@ function ScanModal({ onClose, onPick, hint }) {
   const [state, setState] = useState("pick"); // pick | busy | results | error
   const [items, setItems] = useState([]);
   const [err, setErr] = useState("");
+  const [big, setBig] = useState(null); // candidate whose image is expanded full-screen
   const fileRef = useRef(null);
   useEffect(() => { fileRef.current?.click(); }, []);
 
@@ -873,9 +904,11 @@ function ScanModal({ onClose, onPick, hint }) {
       ${state === "error" && html`
         <div class="card" style="color:var(--red);font-size:13px">${err}</div>
         <button class="ghost" onClick=${() => fileRef.current?.click()}>Try another photo</button>`}
+      ${state === "results" && html`<div class="dim" style="font-size:12px;margin-bottom:8px">Tap a card to use it · tap the picture to enlarge. (BrickLink renders these as grey line-art — colour isn't shown.)</div>`}
       ${state === "results" && items.map(it => html`
         <div class="card row" style="cursor:pointer" onClick=${() => onPick(it)}>
-          ${it.img_url && html`<img class="setimg" src=${it.img_url} loading="lazy"/>`}
+          ${it.img_url && html`<img class="setimg" style="width:72px;height:72px" src=${it.img_url} loading="lazy"
+            onClick=${e => { e.stopPropagation(); setBig(it); }}/>`}
           <div style="flex:1;min-width:0">
             <div class="clamp2" style="font-size:14px;font-weight:600">${it.name}</div>
             <div class="dim mono" style="font-size:11px">${it.type || ""} · ${it.id} · ${Math.round((it.score || 0) * 100)}%</div>
@@ -883,6 +916,17 @@ function ScanModal({ onClose, onPick, hint }) {
         </div>`)}
       ${state === "results" && html`<button class="ghost" onClick=${() => fileRef.current?.click()}>Rescan</button>`}
     </div>
+    ${big && html`<${Portal}><div class="modal" style="align-items:center;z-index:30" onClick=${() => setBig(null)}>
+      <div style="max-width:520px;width:100%;padding:16px;position:relative;display:flex;flex-direction:column;justify-content:center" onClick=${e => e.stopPropagation()}>
+        <button class="step" style="position:absolute;top:26px;right:26px;z-index:2;background:rgba(0,0,0,.65);border-color:rgba(255,255,255,.3);color:#fff" onClick=${() => setBig(null)}>✕</button>
+        ${big.img_url && html`<img src=${big.img_url} style="width:100%;max-height:70vh;object-fit:contain;border-radius:14px;background:#fff"/>`}
+        <div class="card" style="margin-top:10px">
+          <div style="font-size:15px;font-weight:700">${big.name}</div>
+          <div class="dim mono" style="font-size:12px;margin-top:4px">${big.type || ""} · ${big.id}</div>
+          <button class="btn green" style="margin-top:10px" onClick=${() => { setBig(null); onPick(big); }}>Use this</button>
+        </div>
+      </div>
+    </div></${Portal}>`}
   </div></${Portal}>`;
 }
 
@@ -891,7 +935,7 @@ function App() {
   const [tab, setTab] = useState("sets");
   const [index, setIndex] = useState(() => {
     let idx = load("bt:index", []);
-    if (idx.some(e => e.fullVal === undefined || e.bookletQty === undefined || e.condition === undefined || e.idxVer !== 3)) {
+    if (idx.some(e => e.fullVal === undefined || e.bookletQty === undefined || e.condition === undefined || e.idxVer !== 4)) {
       idx = idx.map(e => { const rec = load(`bt:set:${e.setNum}`, null); return rec ? indexEntry(rec) : e; });
       save("bt:index", idx);
     }
@@ -1048,6 +1092,7 @@ function SetCard({ e, buys, onOpen, showBuys = true, mocPcs = 0, compact = false
   const detailBody = html`
     <div class="row" style="gap:6px;margin-top:5px;flex-wrap:wrap">
       ${showTriage && html`<span style=${`font-size:11px;font-weight:700;color:${triageOf(e.triage).color}`}>${triageOf(e.triage).label}</span>`}
+      ${e.donor && html`<span class="badge" style="color:var(--blue);border:1px solid var(--blue)">♻️ Donor</span>`}
       ${e.boxHas && html`<span class="badge" style="color:var(--blue);border:1px solid var(--blue)">📦</span>`}
       ${e.theme && html`<span class="badge" style="color:var(--purple);border:1px solid var(--purple)">${e.theme}</span>`}
       ${mocPcs > 0 && html`<span class="badge" style="color:var(--blue);border:1px solid var(--blue)">♻️ ${mocPcs} → MOC · ${inSet} in set</span>`}
@@ -1090,6 +1135,7 @@ function SetCard({ e, buys, onOpen, showBuys = true, mocPcs = 0, compact = false
             ${showTriage && html`<span style=${`font-size:11px;font-weight:700;flex-shrink:0;color:${triageOf(e.triage).color}`}>${triageOf(e.triage).label}</span>`}
             ${e.instructions !== "none" && e.instructions && html`<span style="font-size:11px;flex-shrink:0">📖</span>`}
             ${e.boxHas && html`<span style="font-size:11px;flex-shrink:0">📦</span>`}
+            ${e.donor && html`<span style="font-size:11px;flex-shrink:0;color:var(--blue);font-weight:700">Donor</span>`}
             ${mocPcs > 0 && html`<span style="font-size:11px;flex-shrink:0">♻️</span>`}
           </div>
         </div>
@@ -2025,6 +2071,7 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
   const [fetched, setFetched] = useState(null); // {meta, parts}
   const [buyIds, setBuyIds] = useState(() => prefBuy ? [prefBuy.id] : lastBuy ? [lastBuy.id] : []);
   const [scan, setScan] = useState(false);
+  const [scanPart, setScanPart] = useState(null); // scan returned a PART, not a set
   const [newReceipt, setNewReceipt] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   // mode: normal | quick | bulk (bulk implies quick) — persisted via the two legacy keys
@@ -2175,8 +2222,17 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
       </div>
     </div>`}
     ${err && html`<div class="card" style="color:var(--red);font-size:13px">${err}</div>`}
-    ${scan && html`<${ScanModal} hint="One set per photo" onClose=${() => setScan(false)}
-      onPick=${it => { setScan(false); setNumRaw(it.id); go(it.id); }} />`}
+    ${scanPart && html`<div class="card">
+      <div style="font-weight:700;margin-bottom:4px">That's a part, not a set</div>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">Scan found <b style="color:var(--text)">${scanPart.name}</b> (${scanPart.id}). Find which set it belongs to on BrickLink, then type that set number above — or scan the set's box / instructions instead.</div>
+      <a class="btn blue" style="display:block;text-align:center;text-decoration:none" href=${blPartInSets(scanPart.id)} target="_blank">🔗 Find sets with this part on BrickLink ↗</a>
+      <div style="height:8px"></div>
+      <button class="ghost" onClick=${() => setScanPart(null)}>Dismiss</button>
+    </div>`}
+    ${scan && html`<${ScanModal} hint="Scan the box, instructions, or a built model" onClose=${() => setScan(false)}
+      onPick=${it => { setScan(false); setScanPart(null);
+        if ((it.type || "").toLowerCase() === "set") { setNumRaw(it.id); go(it.id); }
+        else setScanPart(it); }} />`}
   </div>`;
 }
 
@@ -2257,14 +2313,14 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     const ql = q.trim().toLowerCase();
     const list = rec.parts.filter(p =>
       // #3: hiding spares still surfaces spares you've actually logged (qtyFound > 0) so they don't vanish
-      !isSeparator(p) && (showSpares || !p.isSpare || p.qtyFound > 0) && (!hideFound || p.qtyFound < p.qtyNeeded) &&
+      !isExcludedPart(p) && (showSpares || !p.isSpare || p.qtyFound > 0) && (!hideFound || p.qtyFound < p.qtyNeeded) &&
       (!ql || p.partName?.toLowerCase().includes(ql) || p.partNumber?.toLowerCase().includes(ql) || p.colorName?.toLowerCase().includes(ql)));
     const keyOf = p => groupMode === "group" ? colorGroup(p.colorName) : (p.colorName || "Unknown");
     const map = new Map();
     for (const p of list) { const k = keyOf(p); if (!map.has(k)) map.set(k, []); map.get(k).push(p); }
     const entries = [...map.entries()];
     if (groupMode === "group") {
-      entries.sort((a, b) => groupRank(a[0]) - groupRank(b[0]));
+      entries.sort((a, b) => groupRank(a[0]).localeCompare(groupRank(b[0])));
       for (const [, l] of entries) l.sort((a, b) => `${a.colorName}|${a.partName}`.localeCompare(`${b.colorName}|${b.partName}`));
     } else {
       entries.sort((a, b) => a[0].localeCompare(b[0]));
@@ -2312,7 +2368,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     if (next === logMode) return;
     if (next === "remaining") {
       if (!confirm("Switch to Remaining mode? This set becomes a part-out donor: it's marked as full (all parts in set), then you tick OFF what you've removed. The set's total count is kept.")) return;
-      change(r => { r.logMode = "remaining"; for (const p of r.parts) if (!isSeparator(p) && !p.isSpare) p.qtyFound = p.qtyNeeded; return r; });
+      change(r => { r.logMode = "remaining"; for (const p of r.parts) if (!isExcludedPart(p) && !p.isSpare) p.qtyFound = p.qtyNeeded; return r; });
     } else {
       change(r => { r.logMode = "find"; return r; });
     }
@@ -2349,7 +2405,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
                   r.built = true;
                   const fill = {};
                   for (const p of r.parts) {
-                    if (isSeparator(p) || p.isSpare) continue;
+                    if (isExcludedPart(p) || p.isSpare) continue;
                     if (p.qtyFound < p.qtyNeeded) { fill[p.id] = p.qtyFound; p.qtyFound = p.qtyNeeded; }
                   }
                   r.builtFill = fill;
@@ -2414,10 +2470,18 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       <div class="dim" style="font-size:12px;margin-top:8px">Look up via the BrickLink price guide link above, enter once. Live pricing needs the BrickLink API (Phase 2).</div>
     </${Acc}>
 
-    <${Acc} title="Triage" summary=${triageOf(rec.triage).label} open=${openAcc.has("triage")} onToggle=${() => toggleAcc("triage")}>
+    <${Acc} title="Triage" summary=${[triageOf(rec.triage).label, rec.donor ? "♻️ Donor" : null].filter(Boolean).join(" · ")} open=${openAcc.has("triage")} onToggle=${() => toggleAcc("triage")}>
       <div class="row" style="gap:6px">
         ${TRIAGE.map(t => html`<${Chip} label=${t.label} color=${t.color} active=${rec.triage === t.id}
           onClick=${() => change(r => { r.triage = t.id; return r; })} />`)}
+      </div>
+      <div class="row" style="justify-content:space-between;gap:10px;margin-top:14px">
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:600">♻️ Donor / spare set</div>
+          <div class="dim" style="font-size:12px;margin-top:3px">Kept intact in your donor box as a parts source — available to part out or sell if the price is right, but not broken down. Separate from triage.</div>
+        </div>
+        <button class="chip" style=${`flex-shrink:0;border-color:${rec.donor ? "var(--blue)" : "var(--line)"};color:${rec.donor ? "#1C1A17" : "var(--dim)"};background:${rec.donor ? "var(--blue)" : "transparent"}`}
+          onClick=${() => change(r => { r.donor = !r.donor; return r; })}>${rec.donor ? "On" : "Off"}</button>
       </div>
     </${Acc}>
 
@@ -2798,7 +2862,10 @@ function PartImgViewer({ p, onClose }) {
       <div class="card" style="margin-top:10px">
         <div style="font-size:15px;font-weight:700">${p.partName}</div>
         <div class="dim mono" style="font-size:12px;margin-top:4px">${p.colorName} · ${p.partNumber}${p.isSpare ? " · spare" : ""}</div>
-        <a href=${`https://www.bricklink.com/v2/catalog/catalogitem.page?P=${encodeURIComponent(p.partNumber || "")}`} target="_blank" style="font-size:13px;font-weight:600;display:inline-block;margin-top:8px">BrickLink part ↗</a>
+        <div class="row" style="gap:14px;margin-top:8px">
+          <a href=${`https://www.bricklink.com/v2/catalog/catalogitem.page?P=${encodeURIComponent(p.partNumber || "")}`} target="_blank" style="font-size:13px;font-weight:600">BrickLink part ↗</a>
+          <a href=${blPartInSets(p.partNumber)} target="_blank" style="font-size:13px;font-weight:600">In which sets ↗</a>
+        </div>
       </div>
     </div>
   </div></${Portal}>`;
@@ -2840,9 +2907,11 @@ function SortingMode({ index, buys, persistSet }) {
       if (colors.length === 1) await finderSets(part, colors[0]);
       else setFinder({ stage: "colors", part, colors: [...colors].sort((a, b) => (b.num_sets || 0) - (a.num_sets || 0)) });
     } catch (e) {
-      setFinder({ stage: "error", msg: e.status === 404
-        ? `“${pn}” isn’t a Rebrickable part number — scan the part or type its exact number.`
-        : (e.message || String(e)) });
+      // 404 = Rebrickable doesn't index this id. Usually a PRINTED / sticker-applied part
+      // (e.g. 65474pb04, 30350bpb187) — fall back to BrickLink's "part in which sets" lookup
+      // so e can still identify the set, instead of dead-ending.
+      if (e.status === 404) { setFinder({ stage: "blfind", pn }); return; }
+      setFinder({ stage: "error", msg: e.message || String(e) });
     }
   }
   async function finderSets(part, color) {
@@ -2876,9 +2945,12 @@ function SortingMode({ index, buys, persistSet }) {
   }
 
   // with a target set, only that set is in play (even if it's "complete"); otherwise every incomplete set
+  // Donor sets are parts SOURCES kept whole, not sets you're filling — kept out of the hunt by
+  // default (like Sell), unless Settings → "Hunt donor sets" is on. A 🎯 target always overrides.
+  const huntDonors = load("bt:huntDonors", false);
   const candidates = useMemo(() => targetNum
     ? index.filter(e => e.setNum === targetNum)
-    : index.filter(e => e.pct < 100 && e.triage !== "sell"), [index, targetNum]);
+    : index.filter(e => e.pct < 100 && e.triage !== "sell" && (huntDonors || !e.donor)), [index, targetNum, huntDonors]);
   const recs = useMemo(() => {
     const out = {};
     for (const e of candidates) out[e.setNum] = load(`bt:set:${e.setNum}`, null);
@@ -2894,7 +2966,7 @@ function SortingMode({ index, buys, persistSet }) {
       if (!rec) continue;
       for (const p of rec.parts) {
         if (p.isSpare || p.qtyFound >= p.qtyNeeded) continue;
-        if (p.partName?.toLowerCase().includes(ql) || p.partNumber?.toLowerCase().includes(ql) || p.colorName?.toLowerCase().includes(ql))
+        if (p.partName?.toLowerCase().includes(ql) || p.partNumber?.toLowerCase().includes(ql) || p.colorName?.toLowerCase().includes(ql) || partMatches(p, q.trim()))
           out.push({ set: rec, p });
       }
     }
@@ -2917,7 +2989,7 @@ function SortingMode({ index, buys, persistSet }) {
     if (!targetNum || !pid) return;
     const rec = recs[targetNum] || load(`bt:set:${targetNum}`, null);
     if (!rec) return;
-    const matches = rec.parts.filter(p => !p.isSpare && p.qtyFound < p.qtyNeeded && p.partNumber === pid);
+    const matches = rec.parts.filter(p => !p.isSpare && p.qtyFound < p.qtyNeeded && partMatches(p, pid));
     if (matches.length === 1) {
       bump(targetNum, matches[0].id);
       setAutoMsg(`✓ +1 ${matches[0].colorName} ${pid} → ${rec.name}`);
@@ -2967,6 +3039,14 @@ function SortingMode({ index, buys, persistSet }) {
     ${finder?.stage === "busy" && html`<div class="card dim" style="text-align:center">${finder.msg}</div>`}
     ${finder?.stage === "error" && html`<div>
       <div class="card" style="color:var(--red);font-size:13px">${finder.msg}</div>
+      <button class="ghost" onClick=${() => setFinder(null)}>Back</button>
+    </div>`}
+    ${finder?.stage === "blfind" && html`<div>
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:6px">${finder.pn} is a printed / sticker part</div>
+        <div class="dim" style="font-size:13px;margin-bottom:12px">Rebrickable only indexes the plain mould, so it can't list this part's sets. Look it up on BrickLink to find the set, then add that set from the Sets tab (or set it as your 🎯 Target and scan the part again — printed parts now match the plain tile the set needs).</div>
+        <a class="btn blue" style="display:block;text-align:center;text-decoration:none" href=${blPartInSets(finder.pn)} target="_blank">🔗 Find sets with this part on BrickLink ↗</a>
+      </div>
       <button class="ghost" onClick=${() => setFinder(null)}>Back</button>
     </div>`}
     ${finder?.stage === "done" && html`<div>
@@ -3631,13 +3711,21 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
   const [currency, setCurrencyRaw] = useState(() => load("bt:currency", "AUD"));
   const setCurrency = v => { setCurrencyRaw(v); save("bt:currency", v); };
   const [countSp, setCountSp] = useState(() => !!load("bt:countSpares", false));
+  const [hideStk, setHideStk] = useState(() => !!load("bt:hideStickers", true));
+  const [huntDon, setHuntDon] = useState(() => !!load("bt:huntDonors", false));
   const [cardPct, setCardPct] = useState(() => !!load("bt:cardNewPct", false));
   const [cardTri, setCardTri] = useState(() => !!load("bt:cardNewTriage", false));
+  // recompute every set's cached completion (called when a rule that affects % changes)
+  const reindexAll = () => persistIndex(index.map(e => { const rec = load(`bt:set:${e.setNum}`, null); return rec ? indexEntry(rec) : e; }));
   function toggleSpares() {
     const v = !countSp; setCountSp(v); save("bt:countSpares", v);
-    // recompute every set's cached completion with the new rule
-    persistIndex(index.map(e => { const rec = load(`bt:set:${e.setNum}`, null); return rec ? indexEntry(rec) : e; }));
+    reindexAll();
     setMsg(v ? "Spares now count toward completion %." : "Spares no longer count toward completion %.");
+  }
+  function toggleStickers() {
+    const v = !hideStk; setHideStk(v); save("bt:hideStickers", v);
+    reindexAll();
+    setMsg(v ? "Sticker sheets hidden from parts lists & %." : "Sticker sheets shown in parts lists & %.");
   }
   const importRef = useRef(null);
 
@@ -3721,6 +3809,25 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
         </div>
         <button class="chip" style=${`flex-shrink:0;border-color:${countSp ? "var(--green)" : "var(--line)"};color:${countSp ? "#1C1A17" : "var(--dim)"};background:${countSp ? "var(--green)" : "transparent"}`}
           onClick=${toggleSpares}>${countSp ? "On" : "Off"}</button>
+      </div>
+      <div class="row" style="justify-content:space-between;gap:10px;margin-top:14px">
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:600">Hide sticker sheets</div>
+          <div class="dim" style="font-size:12px;margin-top:3px">On by default — you buy bulk with stickers already applied, so the loose "sticker sheet" row is noise. Dropped from parts lists and %. The stickered tile itself still counts.</div>
+        </div>
+        <button class="chip" style=${`flex-shrink:0;border-color:${hideStk ? "var(--green)" : "var(--line)"};color:${hideStk ? "#1C1A17" : "var(--dim)"};background:${hideStk ? "var(--green)" : "transparent"}`}
+          onClick=${toggleStickers}>${hideStk ? "On" : "Off"}</button>
+      </div>
+    </${Section}>
+
+    <${Section} title=${`Sorting · donor sets ${huntDon ? "hunted" : "excluded"}`}>
+      <div class="row" style="justify-content:space-between;gap:10px">
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:600">Hunt donor sets too</div>
+          <div class="dim" style="font-size:12px;margin-top:3px">Off by default — sets flagged ♻️ Donor are kept whole as parts sources, so they stay out of Sorting mode's part-hunt. Turn on to fill them like any other set. (A 🎯 target set is always hunted.)</div>
+        </div>
+        <button class="chip" style=${`flex-shrink:0;border-color:${huntDon ? "var(--green)" : "var(--line)"};color:${huntDon ? "#1C1A17" : "var(--dim)"};background:${huntDon ? "var(--green)" : "transparent"}`}
+          onClick=${() => { const v = !huntDon; setHuntDon(v); save("bt:huntDonors", v); }}>${huntDon ? "On" : "Off"}</button>
       </div>
     </${Section}>
 
