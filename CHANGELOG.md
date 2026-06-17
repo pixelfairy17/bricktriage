@@ -8,6 +8,21 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.34.0 — 2026-06-17
+
+- **MOC import fixed and made readable.** The wanted-list CSV parser is now quote-aware (part names containing commas, e.g. `"Brick, Modified 1 x 2…"`, no longer shift the columns) and reads the colour **name** column instead of the colour-id number, and it captures the part name. Imported wanted lists now render **like a set's parts list** — grouped by colour with part name · colour · qty and a have/need count per row and per colour group. Import shows an **"Imported N parts (M pcs)"** confirmation.
+- **MOCs are now set-like.** Added a **Planning** status (for builds you're still designing or haven't gathered parts for) and a **"% of plan"** readout in the header — the wanted list is the MOC's plan, matched against the real parts you allocate from sets. Have-counts base-match (a BrickLink import number like `3023` finds the Rebrickable part `3023b`).
+- **Note 1:** opening a freshly added set auto-collapses Instructions, Box and Buys & notes (only Triage stays open).
+- **Note 2:** the "just changed" part hint is its own one-line, right-aligned row under the count (no longer wraps into the part name).
+- **Note 3:** opening a set scrolls to the top (was inheriting the list's scroll position).
+- **Note 4:** returning from a set/MOC restores your place in the sets list (was jumping to the top).
+- **Note 5:** sets with no Rebrickable part inventory (multipacks like 66786) show a clear explanation instead of an empty list.
+- **Note 6:** "Yellowish Green" groups under Green, not Yellow.
+- **Note 7:** in a set's parts **Select** mode you can bulk-move every selected found part into a MOC at once; the MOC picker defaults to the last MOC you used.
+- **Note 8:** the sets list sort gains an **↑ Asc / ↓ Desc** toggle for Newest / Completion / Value.
+
+-----
+
 ## v0.33.0 — 2026-06-17
 
 - **Hunt mode "Find sets containing" now lists sets in-app for printed/sticker parts.** When you find a part that isn't in any set you track, **🔎 Find LEGO sets containing** returns a selectable list of sets right in the app — tap one to track it and log the part. Previously, printed/sticker parts (Brickognize returns the BrickLink id, e.g. `65474pb04`, which Rebrickable's direct part lookup 404s on) dead-ended at a BrickLink link, forcing you to copy the set number by hand and add it from the Sets tab. The finder now resolves the BrickLink id via Rebrickable's `bricklink_id` filter first (guarded against a server that ignores the param), so the whole pick-a-set flow stays in-app. The BrickLink "find in sets" link only appears if the part is genuinely unindexed by Rebrickable.
