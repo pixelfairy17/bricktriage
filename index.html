@@ -89,8 +89,14 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.34.0";
+const APP_VERSION = "0.35.0";
 const CHANGELOG = [
+  ["0.35.0", "2026-06-17", [
+    "WTB rework — named want lists. The Want-to-buy tab is now a set of named lists (like naming a buy) instead of one flat pile. Each list can be standalone (you name it) or linked to a Set or MOC. Open a list to see its parts grouped by colour, check them off, rename, or delete.",
+    "Two-way linking: a set or MOC with missing parts gets a '🛒 Add missing to want list' button (set detail / MOC wanted card) that pushes its shortfall (need − have) into a linked list, creating it the first time and topping it up on re-run.",
+    "Got = sync (Settings → Want to buy): when you tick a part 'got' on a SET-linked list, choose Manual (just check off), Ask (prompt to also mark it found in the set), or Auto (always mark it found). MOC-linked lists always count 'got' parts toward the MOC's plan %.",
+    "Backup format v7 includes want lists. The old flat want-to-buy list migrates into one 'General' named list automatically.",
+  ]],
   ["0.34.0", "2026-06-17", [
     "MOC import fixed + readable: the CSV parser is now quote-aware (part names with commas no longer shift columns) and reads the colour NAME column (was grabbing the colour-id number). Imported wanted lists now render like a set's parts list — grouped by colour with part name, colour, qty and have/need per row and per group. Import shows an 'Imported N parts' confirmation.",
     "MOCs gain a Planning status (for builds you're still designing / haven't gathered parts for) and show '% of plan' in the header — the wanted list is the MOC's plan, matched against the real parts you allocate. A MOC now reads like an unofficial set.",
@@ -1001,6 +1007,29 @@ function App() {
     saveMocs(mocs.filter(x => x.id !== id));
   };
   const [openMocId, setOpenMocId] = useState(null);
+  // WTB named lists (lifted to App so the WTB tab, Set detail and MOC detail all share them)
+  const [wtbLists, setWtbListsRaw] = useState(() => loadWtbLists());
+  const saveWtbLists = v => { setWtbListsRaw(v); save("bt:wtbLists", v); };
+  const upsertWtbList = l => saveWtbLists(wtbLists.some(x => x.id === l.id) ? wtbLists.map(x => x.id === l.id ? l : x) : [...wtbLists, l]);
+  // Push a Set/MOC's shortfall into its linked WTB list (creating it if needed); tops up on re-run.
+  // Returns the list id. parts: [{partNum, name, colorName, qty}].
+  const pushMissingToWtb = ({ linkType, linkId, name, parts }) => {
+    const incoming = (parts || []).filter(p => (p.qty || 0) > 0);
+    let list = wtbLists.find(l => l.linkType === linkType && l.linkId === linkId);
+    if (!list) {
+      list = { id: "wtb-" + Date.now(), name, linkType, linkId, dateAdded: Date.now(), parts: incoming.map(newWtbPart) };
+      saveWtbLists([list, ...wtbLists]);
+    } else {
+      const next = [...(list.parts || [])];
+      for (const p of incoming) {
+        const i = next.findIndex(x => x.partNum === p.partNum && (x.colorName || "") === (p.colorName || ""));
+        if (i >= 0) { if (!next[i].got) next[i] = { ...next[i], qty: Math.max(next[i].qty || 0, p.qty || 0) }; }
+        else next.push(newWtbPart(p));
+      }
+      saveWtbLists(wtbLists.map(l => l.id === list.id ? { ...l, parts: next } : l));
+    }
+    return list.id;
+  };
   const allocBySet = useMemo(() => {
     const m = new Map();
     for (const mo of mocs) for (const a of (mo.parts || []))
@@ -1081,10 +1110,12 @@ function App() {
             merch=${merch} upsertMerch=${upsertMerch} deleteMerch=${deleteMerch}
             openMerchId=${openMerchId} setOpenMerchId=${setOpenMerchId}
             mocs=${mocs} upsertMoc=${upsertMoc} allocBySet=${allocBySet} onOpenMoc=${setOpenMocId}
+            wtbLists=${wtbLists} saveWtbLists=${saveWtbLists} upsertWtbList=${upsertWtbList}
             onOpen=${n => { setSetOrigin(null); setOpenSetNum(n); }} onAdd=${() => setAdding(true)} />`}
         ${tab === "sets" && !openSetNum && !adding && openMocId && html`
           <${MocDetail} key=${openMocId} moc=${mocs.find(m => m.id === openMocId)} mocs=${mocs} index=${index}
             upsertMoc=${upsertMoc} deleteMoc=${id => { deleteMoc(id); setOpenMocId(null); }}
+            wtbLists=${wtbLists} pushMissingToWtb=${pushMissingToWtb}
             onBack=${() => setOpenMocId(null)} />`}
         ${tab === "sets" && adding && html`
           <${AddSet} key="v-addset" buys=${buys} cats=${cats} addBuy=${addBuy} existing=${index.map(e => e.setNum)}
@@ -1096,14 +1127,14 @@ function App() {
             onQuickSave=${(rec, stay) => { persistSet(rec); if (!stay) { if (addFromBuyId) backToOriginBuy(); else { setAdding(false); setSetOrigin(null); } } }} />`}
         ${tab === "sets" && openSetNum && !adding && html`
           <${SetDetail} key=${"v-set-" + openSetNum} setNum=${openSetNum} buys=${buys} cats=${cats} addBuy=${addBuy} persistSet=${persistSet}
-            mocs=${mocs} upsertMoc=${upsertMoc}
+            mocs=${mocs} upsertMoc=${upsertMoc} wtbLists=${wtbLists} pushMissingToWtb=${pushMissingToWtb}
             onBack=${backFromSet} onDelete=${() => deleteSet(openSetNum)} />`}
         ${tab === "sort" && html`<${SortingMode} key="v-sort" index=${index} buys=${buys} persistSet=${persistSet} />`}
         ${tab === "buys" && html`<${Buys} key="v-buys" buys=${buys} index=${index} cats=${cats} merch=${merch} onOpenMerch=${openMerchFromBuys} upsertMerch=${upsertMerch}
           addBuy=${addBuy} updateBuy=${updateBuy} deleteBuy=${deleteBuy} mutateBuys=${mutateBuys} ensureCat=${ensureCat} persistSet=${persistSet}
           onOpenSet=${openSetFromBuys} onAddSet=${addSetFromBuy} openBuyId=${openBuyId} setOpenBuyId=${setOpenBuyId} />`}
         ${tab === "settings" && html`<${Settings} key="v-settings" index=${index} buys=${buys} merch=${merch} saveMerchList=${saveMerchList}
-          mocs=${mocs} saveMocs=${saveMocs}
+          mocs=${mocs} saveMocs=${saveMocs} wtbLists=${wtbLists} saveWtbLists=${saveWtbLists}
           persistIndex=${persistIndex} setBuys=${setBuys}
           cats=${cats} saveCats=${saveCats} addCat=${addCat} renameCat=${renameCat} delCat=${delCat} />`}
       </div>
@@ -1463,7 +1494,7 @@ function parseWantedList(text) {
   return out;
 }
 
-function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, onBack }) {
+function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], pushMissingToWtb, onBack }) {
   const [mode, setMode] = useState(null); // null | "add" | "return"
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
@@ -1477,9 +1508,16 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, onBack }) {
   const [wantQty, setWantQty] = useState("1");
   const pdfInput = useRef(null);
   const [importMsg, setImportMsg] = useState("");
-  // NF2: have-count for a wanted line = real parts allocated whose part number matches. Base-match
-  // (strip print/mould suffix) so a BrickLink import number (3023) finds the Rebrickable part (3023b).
-  const haveFor = pn => (moc?.parts || []).reduce((a, x) => a + (String(x.partNumber) === String(pn) || partKey(x.partNumber) === partKey(pn) ? x.qty : 0), 0);
+  const [wtbMsg, setWtbMsg] = useState("");
+  // a WTB list linked to this MOC contributes its "got" (bought) parts toward the plan's have-count
+  const linkedWtb = (wtbLists || []).find(l => l.linkType === "moc" && l.linkId === moc?.id);
+  // NF2: have-count for a wanted line = real parts allocated whose part number matches, PLUS any
+  // bought (got) parts from the linked want list. Base-match (3023 import ↔ 3023b allocated).
+  const haveFor = pn => {
+    let n = (moc?.parts || []).reduce((a, x) => a + (String(x.partNumber) === String(pn) || partKey(x.partNumber) === partKey(pn) ? x.qty : 0), 0);
+    if (linkedWtb) n += (linkedWtb.parts || []).reduce((a, w) => a + (w.got && (String(w.partNum) === String(pn) || partKey(w.partNum) === partKey(pn)) ? (w.qty || 0) : 0), 0);
+    return n;
+  };
   const wanted = moc?.wanted || [];
   const wantTotal = wanted.reduce((a, w) => a + (w.qty || 0), 0);
   const wantHave = wanted.reduce((a, w) => a + Math.min(haveFor(w.partNum), w.qty || 0), 0);
@@ -1684,6 +1722,14 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, onBack }) {
           onClick=${() => { upsertMoc({ ...moc, wanted: [...wanted, { partNum: wantPart.trim(), colorName: "", qty: parseInt(wantQty) || 1 }] }); setWantPart(""); setWantQty("1"); }}>+</button>
       </div>
       <button class="ghost" style="margin-top:8px" onClick=${() => setImportOpen(true)}>⬇ Import parts list…</button>
+      ${(() => {
+        const missing = wanted.map(w => ({ partNum: w.partNum, name: w.name, colorName: w.colorName, qty: (w.qty || 0) - haveFor(w.partNum) })).filter(m => m.qty > 0);
+        if (!missing.length) return null;
+        return html`<button class="ghost blue" style="margin-top:6px;border-color:var(--blue);color:var(--blue)"
+          onClick=${() => { pushMissingToWtb?.({ linkType: "moc", linkId: moc.id, name: moc.name, parts: missing }); setWtbMsg(`Added ${missing.length} missing part${missing.length === 1 ? "" : "s"} to a want list.`); setTimeout(() => setWtbMsg(""), 3500); }}>
+          🛒 ${linkedWtb ? "Update" : "Add"} missing to want list (${missing.reduce((a, m) => a + m.qty, 0)} pcs)</button>`;
+      })()}
+      ${wtbMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin-top:6px">✓ ${wtbMsg}</div>`}
       ${wanted.length > 0 && html`<button class="ghost" style="margin-top:6px;color:var(--red);border-color:var(--red)"
         onClick=${() => { if (confirm("Clear the entire wanted list?")) upsertMoc({ ...moc, wanted: [] }); }}>Clear wanted list</button>`}
     </div>
@@ -1757,6 +1803,25 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, onBack }) {
   </div>`;
 }
 
+// ---------- WTB (want-to-buy) — named lists, optionally linked to a Set or MOC ----------
+// Migrates the old flat bt:wtb array into one "General" list the first time.
+function loadWtbLists() {
+  const v = load("bt:wtbLists", null);
+  if (v) return v;
+  const old = load("bt:wtb", []);
+  const migrated = old.length ? [{ id: "wtb-general", name: "General", linkType: null, linkId: null, dateAdded: Date.now(),
+    parts: old.map(w => ({ id: w.id || ("p" + Math.random().toString(36).slice(2, 8)), partNum: w.partNum || "", name: "", colorName: w.colorName || "", qty: w.qty || 1, got: !!w.got, note: w.note || "" })) }] : [];
+  if (migrated.length) save("bt:wtbLists", migrated);
+  return migrated;
+}
+const wtbStats = list => {
+  let open = 0, gotPcs = 0, totalPcs = 0; const parts = list.parts || [];
+  for (const p of parts) { if (!p.got) open++; if (p.got) gotPcs += p.qty || 0; totalPcs += p.qty || 0; }
+  return { open, total: parts.length, gotPcs, totalPcs, pct: totalPcs ? Math.round(gotPcs / totalPcs * 100) : 0 };
+};
+const wtbSyncMode = () => load("bt:wtbSync", "ask"); // manual | ask | auto
+const newWtbPart = p => ({ id: "p" + Date.now() + Math.random().toString(36).slice(2, 6), got: false, name: "", colorName: "", note: "", qty: 1, ...p });
+
 function WtbAdd({ onAdd }) {
   const [partNum, setPartNum] = useState("");
   const [color, setColor] = useState("");
@@ -1782,10 +1847,61 @@ function WtbAdd({ onAdd }) {
   </div>`;
 }
 
-function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, deleteMerch, openMerchId, setOpenMerchId, mocs = [], upsertMoc, allocBySet, onOpenMoc, onOpen, onAdd }) {
+// WTB list detail — colour-grouped parts, check-off (with optional set sync), rename, delete.
+function WtbListDetail({ list, info, onToggleGot, onUpdate, syncMode, onDelete, onOpenLink, onBack }) {
+  const [renaming, setRenaming] = useState(false);
+  const [name, setName] = useState(list.name || "");
+  const [confirmDel, setConfirmDel] = useState(false);
+  const parts = list.parts || [];
+  const s = wtbStats(list);
+  const addPart = p => onUpdate({ ...list, parts: [newWtbPart(p), ...parts] });
+  const delPart = id => onUpdate({ ...list, parts: parts.filter(p => p.id !== id) });
+  const groups = (() => {
+    const m = new Map();
+    for (const p of parts) { const g = colorGroup(p.colorName); if (!m.has(g)) m.set(g, []); m.get(g).push(p); }
+    return [...m.entries()].sort((a, b) => groupRank(a[0]).localeCompare(groupRank(b[0])));
+  })();
+  return html`<div class="navin" key="wtb-detail">
+    <${Header} title=${list.name || "Want list"} sub=${`${s.open} open · ${s.total} parts · ${s.pct}% got`} onBack=${onBack}
+      right=${html`<button class="step" style="width:40px" onClick=${() => setRenaming(v => !v)}>✏️</button>`} />
+    ${renaming && html`<div class="card"><div class="row" style="gap:8px">
+      <input value=${name} onInput=${e => setName(e.target.value)} />
+      <button class="step plus" style="width:54px" disabled=${!name.trim()} onClick=${() => { onUpdate({ ...list, name: name.trim() }); setRenaming(false); }}>✓</button>
+    </div></div>`}
+    ${info.kind && html`<div class="card row" style="gap:10px;align-items:center">
+      <div style="flex:1;min-width:0"><div class="label" style="margin:0">Linked to</div><div class="ellip" style="font-weight:700">${info.label}</div></div>
+      ${info.ok && html`<button class="ghost" style="width:auto;padding:8px 12px" onClick=${onOpenLink}>Open ↗</button>`}
+    </div>`}
+    ${info.kind === "set" && html`<div class="dim" style="font-size:12px;margin:0 2px 10px">Ticking a part ${syncMode === "auto" ? "also marks it found in the linked set" : syncMode === "ask" ? "asks whether to also mark it found in the linked set" : "just checks it off (sync off — change in Settings)"}.</div>`}
+    <${WtbAdd} onAdd=${addPart} />
+    <div style="height:10px"></div>
+    ${parts.length === 0 && html`<div class="card dim" style="text-align:center;padding:20px">No parts yet — add above, or push a set/MOC's shortfall from its detail page.</div>`}
+    ${groups.map(([g, items]) => html`<div key=${g} style="margin-bottom:6px">
+      <div class="label" style="margin:10px 2px 4px">${g} · ${items.length}</div>
+      ${[...items].sort((a, b) => (a.got ? 1 : 0) - (b.got ? 1 : 0)).map(p => html`<div key=${p.id} class="card row" style=${`gap:10px;${p.got ? "opacity:.5" : ""}`}>
+        <button class="step" style=${`width:34px;height:34px;flex-shrink:0;border-color:${p.got ? "var(--green)" : "var(--line)"};background:${p.got ? "var(--green)" : "transparent"};color:#1C1A17;font-weight:800`}
+          onClick=${() => onToggleGot(list, p)}>${p.got ? "✓" : ""}</button>
+        <div style="flex:1;min-width:0">
+          <div class="ellip" style=${`font-weight:700;${p.got ? "text-decoration:line-through" : ""}`}>${p.name || p.partNum || "(part)"}</div>
+          <div class="dim mono" style="font-size:11px">${p.colorName || "—"} · ${p.partNum || "?"} · ×${p.qty}${p.note ? ` · ${p.note}` : ""}</div>
+        </div>
+        <button class="step" style="width:34px;height:34px;flex-shrink:0;color:var(--red);border-color:var(--red)" onClick=${() => delPart(p.id)}>✕</button>
+      </div>`)}
+    </div>`)}
+    ${parts.some(p => p.got) && html`<button class="ghost" style="margin-top:8px" onClick=${() => { if (confirm("Remove all checked-off parts from this list?")) onUpdate({ ...list, parts: parts.filter(p => !p.got) }); }}>Clear checked-off</button>`}
+    <div style="height:12px"></div>
+    ${!confirmDel
+      ? html`<button class="ghost" style="color:var(--red);border-color:var(--red)" onClick=${() => setConfirmDel(true)}>Delete list…</button>`
+      : html`<div class="row" style="gap:8px"><button class="ghost" style="flex:1" onClick=${() => setConfirmDel(false)}>Cancel</button><button class="btn red" style="flex:2" onClick=${onDelete}>Delete list permanently</button></div>`}
+    <div style="height:16px"></div>
+  </div>`;
+}
+
+function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, deleteMerch, openMerchId, setOpenMerchId, mocs = [], upsertMoc, allocBySet, onOpenMoc, wtbLists = [], saveWtbLists, upsertWtbList, onOpen, onAdd }) {
   const [newMoc, setNewMoc] = useState(false);
-  const [wtb, setWtbRaw] = useState(() => load("bt:wtb", [])); // NF4 want-to-buy list
-  const saveWtb = v => { setWtbRaw(v); save("bt:wtb", v); };
+  const [openWtbId, setOpenWtbId] = useState(null); // WTB list being viewed
+  const [newWtb, setNewWtb] = useState(false);
+  const [newWtbName, setNewWtbName] = useState("");
   // #4: remember the list's scroll position so returning from a set/MOC lands where you were
   // (the shared .content scroll is otherwise reset on remount). Stashed on the window across mounts.
   useEffect(() => {
@@ -1922,7 +2038,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   const seenMerch = useMemo(() => [...merch].sort((a, b) => b.dateAdded - a.dateAdded), [merch]);
 
   const segBar = html`<div class="row" style="background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:3px;gap:0;margin-bottom:12px">
-    ${[["sets", `Sets · ${index.length}`], ["merch", `Merch · ${merch.length}`], ["mocs", `MOCs · ${mocs.length}`], ["wtb", `WTB · ${wtb.length}`]].map(([id, label]) => html`
+    ${[["sets", `Sets · ${index.length}`], ["merch", `Merch · ${merch.length}`], ["mocs", `MOCs · ${mocs.length}`], ["wtb", `WTB · ${wtbLists.reduce((a, l) => a + (l.parts || []).filter(p => !p.got).length, 0)}`]].map(([id, label]) => html`
       <button key=${id} onClick=${() => setSeg(id)}
         style=${`flex:1;border:none;padding:9px 5px;border-radius:9px;font-weight:700;font-size:12px;` +
           (seg === id ? "background:var(--yellow);color:#1C1A17" : "background:transparent;color:var(--dim)")}>${label}</button>`)}
@@ -1956,25 +2072,67 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
       onSave=${m => { upsertMoc(m); setNewMoc(false); onOpenMoc(m.id); }} />`}
   </div>`;
 
-  if (seg === "wtb") return html`<div key="seg-wtb">
-    <${Header} title="Want to buy" sub=${`${wtb.filter(w => !w.got).length} open · ${wtb.length} total`} />
-    ${segBar}
-    <${WtbAdd} onAdd=${p => saveWtb([{ id: String(Date.now()), got: false, ...p }, ...wtb])} />
-    <div style="height:12px"></div>
-    ${wtb.length === 0 && html`<div class="card dim" style="text-align:center;padding:24px">
-      Nothing flagged yet. Add parts you want to grab next PAB-wall or second-hand trip — then check them off as you find them.</div>`}
-    ${[...wtb].sort((a, b) => (a.got ? 1 : 0) - (b.got ? 1 : 0)).map(w => html`<div key=${w.id} class="card row" style=${`gap:10px;${w.got ? "opacity:.5" : ""}`}>
-      <button class="step" style=${`width:34px;height:34px;flex-shrink:0;border-color:${w.got ? "var(--green)" : "var(--line)"};background:${w.got ? "var(--green)" : "transparent"};color:#1C1A17;font-weight:800`}
-        onClick=${() => saveWtb(wtb.map(x => x.id === w.id ? { ...x, got: !x.got } : x))}>${w.got ? "✓" : ""}</button>
-      <div style="flex:1;min-width:0">
-        <div class="ellip" style=${`font-weight:700;${w.got ? "text-decoration:line-through" : ""}`}>${w.partNum || "(part)"}${w.colorName ? ` · ${w.colorName}` : ""}</div>
-        <div class="dim" style="font-size:12px">×${w.qty}${w.note ? ` · ${w.note}` : ""}</div>
-      </div>
-      <button class="step" style="width:34px;height:34px;flex-shrink:0;color:var(--red);border-color:var(--red)"
-        onClick=${() => saveWtb(wtb.filter(x => x.id !== w.id))}>✕</button>
-    </div>`)}
-    ${wtb.some(w => w.got) && html`<button class="ghost" style="margin-top:8px" onClick=${() => { if (confirm("Clear all checked-off items?")) saveWtb(wtb.filter(w => !w.got)); }}>Clear checked-off</button>`}
-  </div>`;
+  // WTB link label + a got-toggle that optionally syncs back to the linked SET (Settings → bt:wtbSync)
+  const wtbLinkInfo = list => {
+    if (list.linkType === "set") { const e = index.find(x => x.setNum === list.linkId); return { label: e ? `🧱 ${e.name}` : "🧱 (set removed)", kind: "set", ok: !!e }; }
+    if (list.linkType === "moc") { const m = mocs.find(x => x.id === list.linkId); return { label: m ? `🧩 ${m.name}` : "🧩 (MOC removed)", kind: "moc", ok: !!m }; }
+    return { label: "Standalone list", kind: null, ok: false };
+  };
+  const toggleWtbGot = (list, part) => {
+    const willGet = !part.got;
+    upsertWtbList({ ...list, parts: list.parts.map(p => p.id === part.id ? { ...p, got: willGet } : p) });
+    if (willGet && list.linkType === "set" && list.linkId) {
+      const mode = wtbSyncMode();
+      const ok = mode === "auto" || (mode === "ask" && confirm(`Also mark ${part.qty}× ${part.name || part.partNum} found in this set?`));
+      if (ok) {
+        const rec = structuredClone(load(`bt:set:${list.linkId}`, null));
+        if (rec) {
+          let remaining = part.qty || 1;
+          const rows = rec.parts.filter(sp => !sp.isSpare && partMatches(sp, part.partNum))
+            .sort((a, b) => (((b.colorName || "").toLowerCase() === (part.colorName || "").toLowerCase()) - 0) - (((a.colorName || "").toLowerCase() === (part.colorName || "").toLowerCase()) - 0));
+          for (const sp of rows) { if (remaining <= 0) break; const room = sp.qtyNeeded - sp.qtyFound; if (room > 0) { const add = Math.min(room, remaining); sp.qtyFound += add; remaining -= add; } }
+          persistSet(rec);
+        }
+      }
+    }
+  };
+
+  if (seg === "wtb") {
+    const openList = openWtbId ? wtbLists.find(l => l.id === openWtbId) : null;
+    if (openList) return html`<${WtbListDetail} key=${"wtb-" + openList.id} list=${openList} info=${wtbLinkInfo(openList)}
+      onToggleGot=${toggleWtbGot} onUpdate=${upsertWtbList} syncMode=${wtbSyncMode()}
+      onDelete=${() => { saveWtbLists(wtbLists.filter(l => l.id !== openList.id)); setOpenWtbId(null); }}
+      onOpenLink=${() => { if (openList.linkType === "set") { setOpenWtbId(null); onOpen(openList.linkId); } else if (openList.linkType === "moc") { setOpenWtbId(null); onOpenMoc(openList.linkId); } }}
+      onBack=${() => setOpenWtbId(null)} />`;
+    return html`<div key="seg-wtb">
+      <${Header} title="Want to buy" sub=${`${wtbLists.length} list${wtbLists.length === 1 ? "" : "s"}`} />
+      ${segBar}
+      ${!newWtb && html`<button class="btn" onClick=${() => { setNewWtb(true); setNewWtbName(""); }}>+ New want list</button>`}
+      ${newWtb && html`<div class="card">
+        <${Label}>New list name</${Label}>
+        <div class="row" style="gap:8px">
+          <input autofocus placeholder="e.g. PAB wall trip" value=${newWtbName} onInput=${e => setNewWtbName(e.target.value)} />
+          <button class="step plus" style="width:54px" disabled=${!newWtbName.trim()}
+            onClick=${() => { const l = { id: "wtb-" + Date.now(), name: newWtbName.trim(), linkType: null, linkId: null, dateAdded: Date.now(), parts: [] }; upsertWtbList(l); setNewWtb(false); setOpenWtbId(l.id); }}>✓</button>
+          <button class="ghost" style="width:auto;padding:0 12px" onClick=${() => setNewWtb(false)}>✕</button>
+        </div>
+        <div class="dim" style="font-size:12px;margin-top:8px">Or push a set/MOC's missing parts into a list from its detail page — that list links back two ways.</div>
+      </div>`}
+      <div style="height:10px"></div>
+      ${wtbLists.length === 0 && html`<div class="card dim" style="text-align:center;padding:24px">
+        No want lists yet. Make one here, or open a set/MOC and tap "Add missing to want list".</div>`}
+      ${[...wtbLists].sort((a, b) => b.dateAdded - a.dateAdded).map(list => { const s = wtbStats(list), info = wtbLinkInfo(list);
+        return html`<div key=${list.id} class="card row" style="gap:12px;cursor:pointer" onClick=${() => setOpenWtbId(list.id)}>
+          <div class="setimg" style="width:44px;height:44px;background:var(--panel2);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">${info.kind === "moc" ? "🧩" : info.kind === "set" ? "🧱" : "🛒"}</div>
+          <div style="flex:1;min-width:0">
+            <div class="ellip" style="font-weight:700;font-size:15px">${list.name || "(unnamed)"}</div>
+            <div class="dim" style="font-size:12px">${s.open} open · ${s.total} part${s.total === 1 ? "" : "s"}${info.kind ? ` · ${info.label}` : ""}</div>
+          </div>
+          <span class="mono" style=${`font-size:12px;font-weight:800;flex-shrink:0;color:${s.pct >= 100 ? "var(--green)" : "var(--dim)"}`}>${s.pct}%</span>
+          <span class="dim" style="flex-shrink:0">›</span>
+        </div>`; })}
+    </div>`;
+  }
 
   const openMerchItem = openMerchId && openMerchId !== "__new" ? (merch.find(m => m.id === openMerchId) || null) : null;
   const merchSheet = (openMerchId === "__new" || (openMerchItem && editingMerch)) && html`<${MerchSheet}
@@ -2331,7 +2489,7 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
 }
 
 // ---------- Set detail ----------
-function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, onBack, onDelete }) {
+function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, wtbLists = [], pushMissingToWtb, onBack, onDelete }) {
   const [rec, setRec] = useState(() => load(`bt:set:${setNum}`, null));
   const [q, setQ] = useState("");
   const [showSpares, setShowSpares] = useState(false);
@@ -2344,6 +2502,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const [openColors, setOpenColors] = useState(() => new Set());
   const [moveP, setMoveP] = useState(null); // part row being pushed to a MOC
   const [bulkMoc, setBulkMoc] = useState(false); // #7 bulk-move selected parts to a MOC (picker open)
+  const [savedMsg2, setSavedMsg2] = useState(""); // transient "added to want list" confirmation
   const [groupMode, setGroupModeRaw] = useState(() => load("bt:partgroup", "group")); // group | exact
   const setGroupMode = v => { setGroupModeRaw(v); save("bt:partgroup", v); };
   // accordion open state (item 3/5): collapsed by default when the set is New
@@ -2847,6 +3006,16 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     })()}
 
     <div style="height:8px"></div>
+    ${(() => {
+      const missing = rec.parts.filter(p => !isExcludedPart(p) && !p.isSpare && p.qtyNeeded > p.qtyFound)
+        .map(p => ({ partNum: p.partNumber, name: p.partName, colorName: p.colorName, qty: p.qtyNeeded - p.qtyFound }));
+      const linked = wtbLists.find(l => l.linkType === "set" && l.linkId === setNum);
+      if (!missing.length) return null;
+      return html`<button class="ghost blue" style="border-color:var(--blue);color:var(--blue);margin-bottom:8px"
+        onClick=${() => { pushMissingToWtb?.({ linkType: "set", linkId: setNum, name: rec.name, parts: missing }); setSavedMsg2(`Added ${missing.length} missing part${missing.length === 1 ? "" : "s"} to a want list.`); setTimeout(() => setSavedMsg2(""), 3500); }}>
+        🛒 ${linked ? "Update" : "Add"} missing to want list (${missing.reduce((a, m) => a + m.qty, 0)} pcs)</button>`;
+    })()}
+    ${savedMsg2 && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin-bottom:8px">✓ ${savedMsg2}</div>`}
     ${!confirmDel
       ? html`<button class="ghost" style="color:var(--red);border-color:var(--red)" onClick=${() => setConfirmDel(true)}>Delete set…</button>`
       : html`<div class="row" style="gap:8px">
@@ -3909,7 +4078,7 @@ function Section({ title, children }) {
   </div>`;
 }
 
-function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs, persistIndex, setBuys, cats, saveCats, addCat, renameCat, delCat }) {
+function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs, wtbLists = [], saveWtbLists, persistIndex, setBuys, cats, saveCats, addCat, renameCat, delCat }) {
   const [key, setKeyState] = useState(getKey());
   const [saved, setSaved] = useState(false);
   const [msg, setMsg] = useState("");
@@ -3920,6 +4089,7 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
   const [countSp, setCountSp] = useState(() => !!load("bt:countSpares", false));
   const [hideStk, setHideStk] = useState(() => !!load("bt:hideStickers", true));
   const [huntDon, setHuntDon] = useState(() => !!load("bt:huntDonors", false));
+  const [wtbSync, setWtbSync] = useState(() => load("bt:wtbSync", "ask"));
   const [cardPct, setCardPct] = useState(() => !!load("bt:cardNewPct", false));
   const [cardTri, setCardTri] = useState(() => !!load("bt:cardNewTriage", false));
   // recompute every set's cached completion (called when a rule that affects % changes)
@@ -3954,7 +4124,7 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
       const s = load(photoKey(id), null);
       if (s) photos[id] = s;
     }
-    const blob = new Blob([JSON.stringify({ v: 6, exported: new Date().toISOString(), apiKey: getKey(), buys, sets, cats, merch, mocs, photos, buyOrder: load("bt:buyorder", []) })], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ v: 7, exported: new Date().toISOString(), apiKey: getKey(), buys, sets, cats, merch, mocs, wtbLists, photos, buyOrder: load("bt:buyorder", []) })], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `bricktriage-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -3975,6 +4145,7 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
       if (j.photos) for (const [id, s] of Object.entries(j.photos)) save(photoKey(id), s);
       if (j.merch) saveMerchList?.(j.merch);
       if (j.mocs) saveMocs?.(j.mocs);
+      if (j.wtbLists) saveWtbLists?.(j.wtbLists);
       if (j.cats) saveCats(j.cats);
       if (j.buyOrder) save("bt:buyorder", j.buyOrder);
       let keyRestored = false;
@@ -3990,7 +4161,8 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
     del("bt:bv:kind"); del("bt:bv:cat"); del("bt:bv:sort");
     del("bt:sv:filter"); del("bt:sv:sort"); del("bt:sv:view"); del("bt:sv:groups");
     del("bt:sv:theme"); del("bt:sv:tgroups"); del("bt:sv:seg"); del("bt:sortTarget");
-    persistIndex([]); setBuys([]); saveMerchList?.([]); saveMocs?.([]); setConfirmWipe(false); setMsg("All data wiped.");
+    del("bt:wtb"); del("bt:wtbLists");
+    persistIndex([]); setBuys([]); saveMerchList?.([]); saveMocs?.([]); saveWtbLists?.([]); setConfirmWipe(false); setMsg("All data wiped.");
   }
 
   // browser-reported storage usage/quota (IndexedDB included)
@@ -4036,6 +4208,17 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
         <button class="chip" style=${`flex-shrink:0;border-color:${huntDon ? "var(--green)" : "var(--line)"};color:${huntDon ? "#1C1A17" : "var(--dim)"};background:${huntDon ? "var(--green)" : "transparent"}`}
           onClick=${() => { const v = !huntDon; setHuntDon(v); save("bt:huntDonors", v); }}>${huntDon ? "On" : "Off"}</button>
       </div>
+    </${Section}>
+
+    <${Section} title=${`Want to buy · got = ${wtbSync}`}>
+      <div style="font-size:14px;font-weight:600;margin-bottom:3px">When a want-list part is ticked "got"</div>
+      <div class="dim" style="font-size:12px;margin-bottom:8px">For lists linked to a set: should ticking a part as bought also mark it found in that set?</div>
+      <div class="row" style="background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:3px;gap:0">
+        ${[["manual", "Manual"], ["ask", "Ask"], ["auto", "Auto"]].map(([id, label]) => html`
+          <button key=${id} onClick=${() => { setWtbSync(id); save("bt:wtbSync", id); }}
+            style=${"flex:1;border:none;padding:9px 4px;border-radius:9px;font-weight:700;font-size:13px;" + (wtbSync === id ? "background:var(--green);color:#1C1A17" : "background:transparent;color:var(--dim)")}>${label}</button>`)}
+      </div>
+      <div class="dim" style="font-size:12px;margin-top:8px">Manual = just check it off · Ask = prompt each time · Auto = always mark it found in the linked set. (MOC-linked lists always count "got" parts toward the MOC's plan %.)</div>
     </${Section}>
 
     <${Section} title="Set cards (new sets)">

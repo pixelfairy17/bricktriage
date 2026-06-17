@@ -8,6 +8,15 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.35.0 — 2026-06-17
+
+- **WTB rework — named want lists.** The Want-to-buy tab is now a collection of **named lists** (like naming a buy) instead of one flat pile. Each list is either **standalone** (you name it) or **linked to a Set or MOC**. Open a list to see its parts **grouped by colour**, check them off, rename, or delete it. The old flat list migrates into one "General" named list automatically.
+- **Two-way linking (push).** A Set (set detail) or MOC (wanted card) with missing parts shows a **"🛒 Add missing to want list"** button that pushes its shortfall (need − have) into a linked list — creating it the first time and **topping it up** on re-run. From the list you can jump back to the linked Set/MOC.
+- **"Got" sync (Settings → Want to buy).** For a **set-linked** list, ticking a part as bought can also update the set, your choice: **Manual** (just check off), **Ask** (prompt each time to also mark it found in the set), or **Auto** (always mark it found, base-matched and capped). **MOC-linked** lists always count "got" parts toward the MOC's **% of plan**, so buying shows progress.
+- **Backup format v7** includes want lists.
+
+-----
+
 ## v0.34.0 — 2026-06-17
 
 - **MOC import fixed and made readable.** The wanted-list CSV parser is now quote-aware (part names containing commas, e.g. `"Brick, Modified 1 x 2…"`, no longer shift the columns) and reads the colour **name** column instead of the colour-id number, and it captures the part name. Imported wanted lists now render **like a set's parts list** — grouped by colour with part name · colour · qty and a have/need count per row and per colour group. Import shows an **"Imported N parts (M pcs)"** confirmation.
