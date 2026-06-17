@@ -89,8 +89,12 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.35.0";
+const APP_VERSION = "0.36.0";
 const CHANGELOG = [
+  ["0.36.0", "2026-06-17", [
+    "Want lists & MOC wanted parts now read like a set's parts list: collapsible colour groups (tap a colour to expand) with part thumbnails. Thumbnails come from the BrickLink colour id captured at import, or the set part's own image when pushed from a set. (Re-import an existing MOC list to pick up the colour ids for thumbnails.)",
+    "Want-list parts now have − / have / + steppers — count how many you've actually got and the row marks itself off (struck through) when have = qty. Tapping the part name toggles it full/none. Completing a part on a set-linked list still syncs to the set per Settings → Want to buy.",
+  ]],
   ["0.35.0", "2026-06-17", [
     "WTB rework — named want lists. The Want-to-buy tab is now a set of named lists (like naming a buy) instead of one flat pile. Each list can be standalone (you name it) or linked to a Set or MOC. Open a list to see its parts grouped by colour, check them off, rename, or delete.",
     "Two-way linking: a set or MOC with missing parts gets a '🛒 Add missing to want list' button (set detail / MOC wanted card) that pushes its shortfall (need − have) into a linked list, creating it the first time and topping it up on re-run.",
@@ -366,6 +370,9 @@ const defaultCondFromBuys = (buyIds, buys) =>
 const instrHref = n => `https://www.lego.com/service/buildinginstructions/${encodeURIComponent(String(n).split("-")[0])}`;
 // BrickLink Original Box catalog image — predictable URL, hotlink test: onerror hides it per set
 const blBoxImg = n => `https://img.bricklink.com/ItemImage/ON/0/${encodeURIComponent(n)}.png`;
+// BrickLink part image hotlink (colour id + part number) — gives wanted/WTB lists real thumbnails
+// without an API call; the <Thumb> component falls back to a placeholder if it 404s.
+const blPartImg = (num, blColorId) => (num && blColorId !== "" && blColorId != null) ? `https://img.bricklink.com/ItemImage/PN/${encodeURIComponent(blColorId)}/${encodeURIComponent(num)}.png` : null;
 // one-tap "bought new" autofill: everything present + keeping
 const applyNewAutofill = r => {
   for (const p of r.parts) p.qtyFound = p.qtyNeeded;
@@ -753,6 +760,12 @@ const Chip = ({ label, color, active, onClick }) => html`
     style=${`border-color:${color};color:${active ? "#1C1A17" : color};background:${active ? color : "transparent"}`}>
     ${label}
   </button>`;
+// part thumbnail with graceful fallback (BrickLink hotlinks 404 for some colour/part combos)
+function Thumb({ src, size = 40 }) {
+  const [err, setErr] = useState(false);
+  if (!src || err) return html`<div class="partimg" style=${`width:${size}px;height:${size}px;background:var(--panel2);flex-shrink:0`}></div>`;
+  return html`<img class="partimg" style=${`width:${size}px;height:${size}px`} src=${src} loading="lazy" onError=${() => setErr(true)}/>`;
+}
 const Header = ({ title, sub, onBack, right }) => html`
   <div class="row" style="margin-bottom:14px">
     ${onBack && html`<button class="step" style="width:38px;height:38px;font-size:18px" onClick=${onBack}>‹</button>`}
@@ -1473,7 +1486,7 @@ function parseWantedList(text) {
     res.push(cur);
     return res.map(s => s.trim());
   };
-  let pi = 0, ni = -1, ci = -1, qi = -1, start = 0;
+  let pi = 0, ni = -1, ci = -1, qi = -1, bi = -1, start = 0;
   const h = split(lines[0]).map(s => s.toLowerCase());
   if (h.some(x => /part|element|design|item|colou?r|qty/.test(x))) {
     start = 1;
@@ -1482,6 +1495,7 @@ function parseWantedList(text) {
     ni = h.findIndex(x => /part.?name|^name$/.test(x));               // part name, not colour name
     ci = h.findIndex(x => /colou?r.?name/.test(x));                   // prefer the colour NAME column…
     if (ci < 0) ci = h.findIndex(x => /colou?r/.test(x) && !/id$/.test(x)); // …never the colour-id number
+    bi = h.findIndex(x => /^bl ?colou?r ?id|^colou?r ?id$|colou?r.?id/.test(x)); // BrickLink colour id → part image
     qi = h.findIndex(x => /^min|qty|quantity|count/.test(x));
   }
   if (pi < 0) pi = 0;
@@ -1489,7 +1503,8 @@ function parseWantedList(text) {
     const c = split(lines[i]); const partNum = (c[pi] || "").trim();
     if (!partNum) continue;
     out.push({ partNum, name: ni >= 0 ? (c[ni] || "").trim() : "",
-      colorName: ci >= 0 ? (c[ci] || "").trim() : "", qty: parseInt(c[qi >= 0 ? qi : 2]) || 1 });
+      colorName: ci >= 0 ? (c[ci] || "").trim() : "", blColorId: bi >= 0 ? (c[bi] || "").trim() : "",
+      qty: parseInt(c[qi >= 0 ? qi : 2]) || 1 });
   }
   return out;
 }
@@ -1501,6 +1516,8 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   const [srcSet, setSrcSet] = useState("");
   const [q, setQ] = useState("");
   const [openGroups, setOpenGroups] = useState(() => new Set());
+  const [wantOpen, setWantOpen] = useState(() => new Set()); // collapsible wanted colour groups
+  const toggleWant = g => setWantOpen(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
   const [importOpen, setImportOpen] = useState(false); // NF2
   const [importText, setImportText] = useState("");
   const [wantPart, setWantPart] = useState("");
@@ -1698,13 +1715,20 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
         return entries.map(([g, items]) => {
           const gNeed = items.reduce((a, x) => a + (x.w.qty || 0), 0);
           const gHave = items.reduce((a, x) => a + Math.min(haveFor(x.w.partNum), x.w.qty || 0), 0);
+          const open = wantOpen.has(g);
           return html`<div key=${g} style="margin-bottom:6px">
-            <div class="row" style="justify-content:space-between;margin:10px 2px 4px">
+            <button class="row" onClick=${() => toggleWant(g)}
+              style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
               <span class="label" style="margin:0">${g} · ${items.length}</span>
-              <span class="mono" style=${`font-size:11px;font-weight:800;color:${gHave >= gNeed ? "var(--green)" : "var(--dim)"}`}>${gHave}/${gNeed}</span>
-            </div>
+              <span class="row" style="gap:10px">
+                <span class="mono" style=${`font-size:12px;font-weight:700;color:${gHave >= gNeed ? "var(--green)" : "var(--dim)"}`}>${gHave}/${gNeed}</span>
+                <span class="dim">${open ? "▾" : "▸"}</span>
+              </span>
+            </button>
+            ${open && html`<div style="margin-top:6px">
             ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty;
               return html`<div key=${i} class="row" style=${`gap:8px;background:var(--panel);border:1px solid ${ok ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 9px;margin-bottom:5px;${ok ? "opacity:.7" : ""}`}>
+                <${Thumb} src=${blPartImg(w.partNum, w.blColorId)} />
                 <div style="flex:1;min-width:0">
                   <div class="clamp2" style="font-size:13px;font-weight:600;line-height:1.25">${w.name || w.partNum}</div>
                   <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}</div>
@@ -1712,6 +1736,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
                 <span class="mono" style=${`font-size:12px;font-weight:800;color:${ok ? "var(--green)" : "var(--yellow)"}`}>${Math.min(have, w.qty)}/${w.qty}</span>
                 <button class="step" style="width:30px;height:30px;font-size:11px;color:var(--red);border-color:var(--red)" onClick=${() => upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) })}>✕</button>
               </div>`; })}
+            </div>`}
           </div>`;
         });
       })()}
@@ -1723,7 +1748,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
       </div>
       <button class="ghost" style="margin-top:8px" onClick=${() => setImportOpen(true)}>⬇ Import parts list…</button>
       ${(() => {
-        const missing = wanted.map(w => ({ partNum: w.partNum, name: w.name, colorName: w.colorName, qty: (w.qty || 0) - haveFor(w.partNum) })).filter(m => m.qty > 0);
+        const missing = wanted.map(w => ({ partNum: w.partNum, name: w.name, colorName: w.colorName, blColorId: w.blColorId, qty: (w.qty || 0) - haveFor(w.partNum) })).filter(m => m.qty > 0);
         if (!missing.length) return null;
         return html`<button class="ghost blue" style="margin-top:6px;border-color:var(--blue);color:var(--blue)"
           onClick=${() => { pushMissingToWtb?.({ linkType: "moc", linkId: moc.id, name: moc.name, parts: missing }); setWtbMsg(`Added ${missing.length} missing part${missing.length === 1 ? "" : "s"} to a want list.`); setTimeout(() => setWtbMsg(""), 3500); }}>
@@ -1816,7 +1841,7 @@ function loadWtbLists() {
 }
 const wtbStats = list => {
   let open = 0, gotPcs = 0, totalPcs = 0; const parts = list.parts || [];
-  for (const p of parts) { if (!p.got) open++; if (p.got) gotPcs += p.qty || 0; totalPcs += p.qty || 0; }
+  for (const p of parts) { const qty = p.qty || 1; const have = Math.min(p.have != null ? p.have : (p.got ? qty : 0), qty); if (have < qty) open++; gotPcs += have; totalPcs += qty; }
   return { open, total: parts.length, gotPcs, totalPcs, pct: totalPcs ? Math.round(gotPcs / totalPcs * 100) : 0 };
 };
 const wtbSyncMode = () => load("bt:wtbSync", "ask"); // manual | ask | auto
@@ -1847,12 +1872,16 @@ function WtbAdd({ onAdd }) {
   </div>`;
 }
 
-// WTB list detail — colour-grouped parts, check-off (with optional set sync), rename, delete.
-function WtbListDetail({ list, info, onToggleGot, onUpdate, syncMode, onDelete, onOpenLink, onBack }) {
+// WTB list detail — colour-grouped parts with thumbnails + have/qty steppers (mark off as you get
+// them), optional set sync on completion, rename, delete. Reads like a set's parts list.
+function WtbListDetail({ list, info, onSetHave, onUpdate, syncMode, onDelete, onOpenLink, onBack }) {
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(list.name || "");
   const [confirmDel, setConfirmDel] = useState(false);
+  const [open, setOpen] = useState(() => new Set());
+  const toggle = g => setOpen(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
   const parts = list.parts || [];
+  const haveOf = p => p.have != null ? p.have : (p.got ? (p.qty || 1) : 0);
   const s = wtbStats(list);
   const addPart = p => onUpdate({ ...list, parts: [newWtbPart(p), ...parts] });
   const delPart = id => onUpdate({ ...list, parts: parts.filter(p => p.id !== id) });
@@ -1872,23 +1901,42 @@ function WtbListDetail({ list, info, onToggleGot, onUpdate, syncMode, onDelete, 
       <div style="flex:1;min-width:0"><div class="label" style="margin:0">Linked to</div><div class="ellip" style="font-weight:700">${info.label}</div></div>
       ${info.ok && html`<button class="ghost" style="width:auto;padding:8px 12px" onClick=${onOpenLink}>Open ↗</button>`}
     </div>`}
-    ${info.kind === "set" && html`<div class="dim" style="font-size:12px;margin:0 2px 10px">Ticking a part ${syncMode === "auto" ? "also marks it found in the linked set" : syncMode === "ask" ? "asks whether to also mark it found in the linked set" : "just checks it off (sync off — change in Settings)"}.</div>`}
+    ${info.kind === "set" && html`<div class="dim" style="font-size:12px;margin:0 2px 10px">Completing a part (have = qty) ${syncMode === "auto" ? "also marks it found in the linked set" : syncMode === "ask" ? "asks whether to also mark it found in the linked set" : "just marks it off here (sync off — change in Settings)"}.</div>`}
     <${WtbAdd} onAdd=${addPart} />
     <div style="height:10px"></div>
     ${parts.length === 0 && html`<div class="card dim" style="text-align:center;padding:20px">No parts yet — add above, or push a set/MOC's shortfall from its detail page.</div>`}
-    ${groups.map(([g, items]) => html`<div key=${g} style="margin-bottom:6px">
-      <div class="label" style="margin:10px 2px 4px">${g} · ${items.length}</div>
-      ${[...items].sort((a, b) => (a.got ? 1 : 0) - (b.got ? 1 : 0)).map(p => html`<div key=${p.id} class="card row" style=${`gap:10px;${p.got ? "opacity:.5" : ""}`}>
-        <button class="step" style=${`width:34px;height:34px;flex-shrink:0;border-color:${p.got ? "var(--green)" : "var(--line)"};background:${p.got ? "var(--green)" : "transparent"};color:#1C1A17;font-weight:800`}
-          onClick=${() => onToggleGot(list, p)}>${p.got ? "✓" : ""}</button>
-        <div style="flex:1;min-width:0">
-          <div class="ellip" style=${`font-weight:700;${p.got ? "text-decoration:line-through" : ""}`}>${p.name || p.partNum || "(part)"}</div>
-          <div class="dim mono" style="font-size:11px">${p.colorName || "—"} · ${p.partNum || "?"} · ×${p.qty}${p.note ? ` · ${p.note}` : ""}</div>
-        </div>
-        <button class="step" style="width:34px;height:34px;flex-shrink:0;color:var(--red);border-color:var(--red)" onClick=${() => delPart(p.id)}>✕</button>
-      </div>`)}
-    </div>`)}
-    ${parts.some(p => p.got) && html`<button class="ghost" style="margin-top:8px" onClick=${() => { if (confirm("Remove all checked-off parts from this list?")) onUpdate({ ...list, parts: parts.filter(p => !p.got) }); }}>Clear checked-off</button>`}
+    ${groups.map(([g, items]) => {
+      const gOpen = open.has(g);
+      const gHave = items.reduce((a, p) => a + Math.min(haveOf(p), p.qty || 1), 0);
+      const gNeed = items.reduce((a, p) => a + (p.qty || 1), 0);
+      return html`<div key=${g} style="margin-bottom:6px">
+        <button class="row" onClick=${() => toggle(g)}
+          style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
+          <span class="label" style="margin:0">${g} · ${items.length}</span>
+          <span class="row" style="gap:10px">
+            <span class="mono" style=${`font-size:12px;font-weight:700;color:${gHave >= gNeed ? "var(--green)" : "var(--dim)"}`}>${gHave}/${gNeed}</span>
+            <span class="dim">${gOpen ? "▾" : "▸"}</span>
+          </span>
+        </button>
+        ${gOpen && html`<div style="margin-top:6px">
+        ${[...items].sort((a, b) => (haveOf(a) >= (a.qty || 1) ? 1 : 0) - (haveOf(b) >= (b.qty || 1) ? 1 : 0)).map(p => {
+          const qty = p.qty || 1, have = Math.min(haveOf(p), qty), done = have >= qty;
+          return html`<div key=${p.id} class="row" style=${`gap:8px;background:var(--panel);border:1px solid ${done ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 9px;margin-bottom:5px;${done ? "opacity:.6" : ""}`}>
+            <${Thumb} src=${p.img || blPartImg(p.partNum, p.blColorId)} />
+            <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => onSetHave(list, p, done ? 0 : qty)}>
+              <div class="clamp2" style=${`font-size:13px;font-weight:600;line-height:1.25;${done ? "text-decoration:line-through" : ""}`}>${p.name || p.partNum || "(part)"}</div>
+              <div class="dim mono" style="font-size:11px">${p.colorName || "—"} · ${p.partNum || "?"}${p.note ? ` · ${p.note}` : ""}</div>
+            </div>
+            <button class="step" style="width:30px;height:30px" disabled=${have === 0} onClick=${() => onSetHave(list, p, have - 1)}>−</button>
+            <div class="mono" style=${`font-size:13px;font-weight:700;min-width:38px;text-align:center;color:${done ? "var(--green)" : "var(--text)"}`}>${have}/${qty}</div>
+            <button class="step plus" style="width:30px;height:30px" disabled=${done} onClick=${() => onSetHave(list, p, have + 1)}>+</button>
+            <button class="step" style="width:30px;height:30px;font-size:11px;color:var(--red);border-color:var(--red)" onClick=${() => delPart(p.id)}>✕</button>
+          </div>`;
+        })}
+        </div>`}
+      </div>`;
+    })}
+    ${parts.some(p => haveOf(p) >= (p.qty || 1)) && html`<button class="ghost" style="margin-top:8px" onClick=${() => { if (confirm("Remove all completed parts from this list?")) onUpdate({ ...list, parts: parts.filter(p => haveOf(p) < (p.qty || 1)) }); }}>Clear completed</button>`}
     <div style="height:12px"></div>
     ${!confirmDel
       ? html`<button class="ghost" style="color:var(--red);border-color:var(--red)" onClick=${() => setConfirmDel(true)}>Delete list…</button>`
@@ -2078,16 +2126,21 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
     if (list.linkType === "moc") { const m = mocs.find(x => x.id === list.linkId); return { label: m ? `🧩 ${m.name}` : "🧩 (MOC removed)", kind: "moc", ok: !!m }; }
     return { label: "Standalone list", kind: null, ok: false };
   };
-  const toggleWtbGot = (list, part) => {
-    const willGet = !part.got;
-    upsertWtbList({ ...list, parts: list.parts.map(p => p.id === part.id ? { ...p, got: willGet } : p) });
-    if (willGet && list.linkType === "set" && list.linkId) {
+  // set a WTB part's "have" count (steppers / tap-to-fill). When it crosses to complete and the list
+  // is set-linked, optionally mark those parts found in the set (per Settings → bt:wtbSync).
+  const wtbSetHave = (list, part, newHave) => {
+    const qty = part.qty || 1;
+    const nv = Math.max(0, Math.min(qty, newHave));
+    const oldHave = part.have != null ? part.have : (part.got ? qty : 0);
+    const nowComplete = nv >= qty, wasComplete = oldHave >= qty;
+    upsertWtbList({ ...list, parts: list.parts.map(p => p.id === part.id ? { ...p, have: nv, got: nowComplete } : p) });
+    if (nowComplete && !wasComplete && list.linkType === "set" && list.linkId) {
       const mode = wtbSyncMode();
-      const ok = mode === "auto" || (mode === "ask" && confirm(`Also mark ${part.qty}× ${part.name || part.partNum} found in this set?`));
+      const ok = mode === "auto" || (mode === "ask" && confirm(`Also mark ${qty}× ${part.name || part.partNum} found in this set?`));
       if (ok) {
         const rec = structuredClone(load(`bt:set:${list.linkId}`, null));
         if (rec) {
-          let remaining = part.qty || 1;
+          let remaining = qty;
           const rows = rec.parts.filter(sp => !sp.isSpare && partMatches(sp, part.partNum))
             .sort((a, b) => (((b.colorName || "").toLowerCase() === (part.colorName || "").toLowerCase()) - 0) - (((a.colorName || "").toLowerCase() === (part.colorName || "").toLowerCase()) - 0));
           for (const sp of rows) { if (remaining <= 0) break; const room = sp.qtyNeeded - sp.qtyFound; if (room > 0) { const add = Math.min(room, remaining); sp.qtyFound += add; remaining -= add; } }
@@ -2100,7 +2153,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   if (seg === "wtb") {
     const openList = openWtbId ? wtbLists.find(l => l.id === openWtbId) : null;
     if (openList) return html`<${WtbListDetail} key=${"wtb-" + openList.id} list=${openList} info=${wtbLinkInfo(openList)}
-      onToggleGot=${toggleWtbGot} onUpdate=${upsertWtbList} syncMode=${wtbSyncMode()}
+      onSetHave=${wtbSetHave} onUpdate=${upsertWtbList} syncMode=${wtbSyncMode()}
       onDelete=${() => { saveWtbLists(wtbLists.filter(l => l.id !== openList.id)); setOpenWtbId(null); }}
       onOpenLink=${() => { if (openList.linkType === "set") { setOpenWtbId(null); onOpen(openList.linkId); } else if (openList.linkType === "moc") { setOpenWtbId(null); onOpenMoc(openList.linkId); } }}
       onBack=${() => setOpenWtbId(null)} />`;
@@ -3008,7 +3061,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     <div style="height:8px"></div>
     ${(() => {
       const missing = rec.parts.filter(p => !isExcludedPart(p) && !p.isSpare && p.qtyNeeded > p.qtyFound)
-        .map(p => ({ partNum: p.partNumber, name: p.partName, colorName: p.colorName, qty: p.qtyNeeded - p.qtyFound }));
+        .map(p => ({ partNum: p.partNumber, name: p.partName, colorName: p.colorName, img: p.img, qty: p.qtyNeeded - p.qtyFound }));
       const linked = wtbLists.find(l => l.linkType === "set" && l.linkId === setNum);
       if (!missing.length) return null;
       return html`<button class="ghost blue" style="border-color:var(--blue);color:var(--blue);margin-bottom:8px"

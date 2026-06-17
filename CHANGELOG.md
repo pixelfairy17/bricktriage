@@ -8,6 +8,13 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.36.0 — 2026-06-17
+
+- **Want lists & MOC wanted parts now read like a set's parts list.** Collapsible **colour groups** (tap a colour to expand/collapse, with have/need counts and a chevron) and **part thumbnails**. Thumbnails come from the BrickLink colour id captured at import (`img.bricklink.com/ItemImage/PN/{colorId}/{part}.png`), or the set part's own image when pushed from a set. *(Re-import an existing MOC list to pick up the colour ids for thumbnails.)*
+- **Want-list parts gain − / have / + steppers.** Count how many you've actually got; the row marks itself off (struck through, greyed) when have = qty. Tapping the part name toggles it full/none. Completing a part on a **set-linked** list still syncs to the set per Settings → Want to buy (manual / ask / auto). Progress (partial have) now feeds the list's % and the WTB tab count.
+
+-----
+
 ## v0.35.0 — 2026-06-17
 
 - **WTB rework — named want lists.** The Want-to-buy tab is now a collection of **named lists** (like naming a buy) instead of one flat pile. Each list is either **standalone** (you name it) or **linked to a Set or MOC**. Open a list to see its parts **grouped by colour**, check them off, rename, or delete it. The old flat list migrates into one "General" named list automatically.
