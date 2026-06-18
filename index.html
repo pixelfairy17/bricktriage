@@ -89,8 +89,15 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.36.0";
+const APP_VERSION = "0.37.0";
 const CHANGELOG = [
+  ["0.37.0", "2026-06-18", [
+    "MOC detail redesign — the 'Wanted parts (target build)' card is now a collapsible Parts List accordion: the full bill of materials for the build (you may or may not own each part). Colour groups + thumbnails as before, now with a have/total · % summary on the header so it reads at a glance while collapsed.",
+    "Mark parts → want list: tick parts individually (checkbox or tap the row) or Select all missing, then '🛒 Add N ticked parts to want list' pushes just those onto the MOC-linked want list (shortfall when partly had, else full qty). Replaces the old all-or-nothing 'Add missing' button.",
+    "Add / import parts is now a minimal collapsible inside the Parts List — hidden until you tap it — holding the by-hand part-add field and the XML / CSV import. Keeps the list clean while sorting.",
+    "Bug: each parts-list row now has − / + qty steppers to adjust the needed quantity (✕ still removes the line).",
+    "Bug: part thumbnails now fall back to a real allocated part's image when an imported / hand-added line has no BrickLink colour id, so pictures show once you've gathered the brick.",
+  ]],
   ["0.36.0", "2026-06-17", [
     "Want lists & MOC wanted parts now read like a set's parts list: collapsible colour groups (tap a colour to expand) with part thumbnails. Thumbnails come from the BrickLink colour id captured at import, or the set part's own image when pushed from a set. (Re-import an existing MOC list to pick up the colour ids for thumbnails.)",
     "Want-list parts now have − / have / + steppers — count how many you've actually got and the row marks itself off (struck through) when have = qty. Tapping the part name toggles it full/none. Completing a part on a set-linked list still syncs to the set per Settings → Want to buy.",
@@ -1516,8 +1523,11 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   const [srcSet, setSrcSet] = useState("");
   const [q, setQ] = useState("");
   const [openGroups, setOpenGroups] = useState(() => new Set());
-  const [wantOpen, setWantOpen] = useState(() => new Set()); // collapsible wanted colour groups
+  const [wantOpen, setWantOpen] = useState(() => new Set()); // collapsible parts-list colour groups
   const toggleWant = g => setWantOpen(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
+  const [partsOpen, setPartsOpen] = useState(true); // Parts List accordion block
+  const [addOpen, setAddOpen] = useState(false);    // collapsible add/import sub-block (hidden until tapped)
+  const [sel, setSel] = useState(() => new Set());  // parts ticked to push onto a want list (by wanted index)
   const [importOpen, setImportOpen] = useState(false); // NF2
   const [importText, setImportText] = useState("");
   const [wantPart, setWantPart] = useState("");
@@ -1539,6 +1549,25 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   const wantTotal = wanted.reduce((a, w) => a + (w.qty || 0), 0);
   const wantHave = wanted.reduce((a, w) => a + Math.min(haveFor(w.partNum), w.qty || 0), 0);
   const wantPct = wantTotal ? Math.round((wantHave / wantTotal) * 100) : 0;
+  // BUG FIX (part picture): fall back to a real allocated part's image (Rebrickable url) when the
+  // imported/hand-added line has no BrickLink colour id to build an image url from.
+  const allocImg = pn => (moc?.parts || []).find(a => a.img && (String(a.partNumber) === String(pn) || partKey(a.partNumber) === partKey(pn)))?.img || null;
+  const partImgFor = w => w.img || blPartImg(w.partNum, w.blColorId) || allocImg(w.partNum);
+  // BUG FIX (qty stepper): edit a parts-list line's needed quantity in place (min 1; ✕ to remove).
+  const setWantQtyAt = (i, q) => upsertMoc({ ...moc, wanted: wanted.map((w, j) => j === i ? { ...w, qty: Math.max(1, q) } : w) });
+  const toggleSel = i => setSel(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; });
+  const selectAllMissing = () => setSel(new Set(wanted.map((w, i) => i).filter(i => haveFor(wanted[i].partNum) < (wanted[i].qty || 0))));
+  // push the ticked parts-list lines onto a (MOC-linked) want list — shortfall when partly had, else full qty
+  const addSelToWant = () => {
+    const picks = [...sel].map(i => wanted[i]).filter(Boolean);
+    if (!picks.length) return;
+    const parts = picks.map(w => { const short = Math.max(0, (w.qty || 0) - haveFor(w.partNum));
+      return { partNum: w.partNum, name: w.name, colorName: w.colorName, blColorId: w.blColorId, qty: short > 0 ? short : (w.qty || 1) }; });
+    pushMissingToWtb?.({ linkType: "moc", linkId: moc.id, name: moc.name, parts });
+    setSel(new Set());
+    setWtbMsg(`Added ${picks.length} part${picks.length === 1 ? "" : "s"} to a want list.`);
+    setTimeout(() => setWtbMsg(""), 3500);
+  };
   const doImport = () => {
     const parsed = parseWantedList(importText);
     if (!parsed.length) { alert("Couldn't find any parts in that text. Paste a BrickLink Studio (XML) or Rebrickable / Studio (CSV) parts export."); return; }
@@ -1699,16 +1728,18 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
       </div>
     </div>
 
-    <div class="card">
-      <div class="row" style="justify-content:space-between;align-items:center">
-        <${Label}>Wanted parts (target build)${wantTotal ? ` · ${wantHave}/${wantTotal}` : ""}</${Label}>
-        ${wantTotal > 0 && html`<span class="mono" style=${`font-weight:800;color:${wantPct >= 100 ? "var(--green)" : wantPct >= 50 ? "var(--yellow)" : "var(--dim)"}`}>${wantPct}%</span>`}
-      </div>
-      ${importMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin:6px 0">✓ ${importMsg}</div>`}
-      ${wanted.length === 0 && html`<div class="dim" style="font-size:12px;margin-bottom:8px">Import the build's parts from BrickLink Studio (XML) or a Studio/Rebrickable parts CSV, or add part numbers below — then gather the real bricks with + Add parts. The list groups by colour and counts have/need against the real parts you allocate.</div>`}
+    <${Acc} title="Parts List" open=${partsOpen} onToggle=${() => setPartsOpen(v => !v)}
+      summary=${wantTotal ? `${wantHave}/${wantTotal} · ${wantPct}%` : "empty"}>
+      ${importMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin:0 0 8px">✓ ${importMsg}</div>`}
+      <div class="dim" style="font-size:12px;margin-bottom:8px">Every part this build needs — you may or may not own each one. Tick parts (individually or <b>Select all missing</b>) and push them to a want list to buy. Have-counts match the real bricks you gather with <b>+ Add parts</b> below.</div>
+      ${wanted.length === 0 && html`<div class="dim" style="font-size:12px;margin-bottom:8px">No parts yet — open <b>➕ Add / import parts</b> below to paste a Studio (XML) / Rebrickable (CSV) list or add part numbers by hand.</div>`}
+      ${wanted.length > 0 && html`<div class="row" style="gap:8px;margin-bottom:8px">
+        <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${selectAllMissing}>Select all missing</button>
+        ${sel.size > 0 && html`<button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${() => setSel(new Set())}>Clear selection</button>`}
+      </div>`}
       ${(() => {
         if (!wanted.length) return null;
-        // group the wanted list by colour bucket so it reads like a set's parts list
+        // group the parts list by colour bucket so it reads like a set's parts list
         const map = new Map();
         wanted.forEach((w, i) => { const g = colorGroup(w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push({ w, i }); });
         const entries = [...map.entries()].sort((a, b) => groupRank(a[0]).localeCompare(groupRank(b[0])));
@@ -1726,38 +1757,39 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
               </span>
             </button>
             ${open && html`<div style="margin-top:6px">
-            ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty;
-              return html`<div key=${i} class="row" style=${`gap:8px;background:var(--panel);border:1px solid ${ok ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 9px;margin-bottom:5px;${ok ? "opacity:.7" : ""}`}>
-                <${Thumb} src=${blPartImg(w.partNum, w.blColorId)} />
-                <div style="flex:1;min-width:0">
-                  <div class="clamp2" style="font-size:13px;font-weight:600;line-height:1.25">${w.name || w.partNum}</div>
-                  <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}</div>
+            ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i);
+              return html`<div key=${i} class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 8px;margin-bottom:5px;${ok && !picked ? "opacity:.7" : ""}`}>
+                <button class="step" style=${`width:28px;height:28px;font-size:13px;flex-shrink:0;${picked ? "color:var(--blue);border-color:var(--blue)" : ""}`} onClick=${() => toggleSel(i)}>${picked ? "☑" : "☐"}</button>
+                <${Thumb} src=${partImgFor(w)} size=${34} />
+                <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => toggleSel(i)}>
+                  <div class="clamp2" style="font-size:13px;font-weight:600;line-height:1.2">${w.name || w.partNum}</div>
+                  <div class="dim mono" style=${`font-size:11px;color:${ok ? "var(--green)" : "var(--dim)"}`}>${w.colorName || "—"} · ${w.partNum} · ${Math.min(have, w.qty)}/${w.qty} have</div>
                 </div>
-                <span class="mono" style=${`font-size:12px;font-weight:800;color:${ok ? "var(--green)" : "var(--yellow)"}`}>${Math.min(have, w.qty)}/${w.qty}</span>
-                <button class="step" style="width:30px;height:30px;font-size:11px;color:var(--red);border-color:var(--red)" onClick=${() => upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) })}>✕</button>
+                <button class="step" style="width:28px;height:28px;flex-shrink:0" disabled=${(w.qty || 1) <= 1} onClick=${() => setWantQtyAt(i, (w.qty || 1) - 1)}>−</button>
+                <button class="step plus" style="width:28px;height:28px;flex-shrink:0" onClick=${() => setWantQtyAt(i, (w.qty || 1) + 1)}>+</button>
+                <button class="step" style="width:28px;height:28px;font-size:11px;flex-shrink:0;color:var(--red);border-color:var(--red)" onClick=${() => { setSel(new Set()); upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) }); }}>✕</button>
               </div>`; })}
             </div>`}
           </div>`;
         });
       })()}
-      <div class="row" style="gap:6px;margin-top:10px">
-        <input style="flex:1" name="bt-want-part" autocomplete="off" autocapitalize="characters" placeholder="Part # to want" value=${wantPart} onInput=${e => setWantPart(e.target.value)} />
-        <input style="width:52px;text-align:center" inputmode="numeric" value=${wantQty} onInput=${e => setWantQty(e.target.value)} />
-        <button class="step plus" style="width:40px" disabled=${!wantPart.trim()}
-          onClick=${() => { upsertMoc({ ...moc, wanted: [...wanted, { partNum: wantPart.trim(), colorName: "", qty: parseInt(wantQty) || 1 }] }); setWantPart(""); setWantQty("1"); }}>+</button>
-      </div>
-      <button class="ghost" style="margin-top:8px" onClick=${() => setImportOpen(true)}>⬇ Import parts list…</button>
-      ${(() => {
-        const missing = wanted.map(w => ({ partNum: w.partNum, name: w.name, colorName: w.colorName, blColorId: w.blColorId, qty: (w.qty || 0) - haveFor(w.partNum) })).filter(m => m.qty > 0);
-        if (!missing.length) return null;
-        return html`<button class="ghost blue" style="margin-top:6px;border-color:var(--blue);color:var(--blue)"
-          onClick=${() => { pushMissingToWtb?.({ linkType: "moc", linkId: moc.id, name: moc.name, parts: missing }); setWtbMsg(`Added ${missing.length} missing part${missing.length === 1 ? "" : "s"} to a want list.`); setTimeout(() => setWtbMsg(""), 3500); }}>
-          🛒 ${linkedWtb ? "Update" : "Add"} missing to want list (${missing.reduce((a, m) => a + m.qty, 0)} pcs)</button>`;
-      })()}
+      ${sel.size > 0 && html`<button class="btn blue" style="margin-top:8px" onClick=${addSelToWant}>🛒 Add ${sel.size} ticked part${sel.size === 1 ? "" : "s"} to want list</button>`}
       ${wtbMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin-top:6px">✓ ${wtbMsg}</div>`}
-      ${wanted.length > 0 && html`<button class="ghost" style="margin-top:6px;color:var(--red);border-color:var(--red)"
-        onClick=${() => { if (confirm("Clear the entire wanted list?")) upsertMoc({ ...moc, wanted: [] }); }}>Clear wanted list</button>`}
-    </div>
+
+      <button class="ghost" style="margin-top:10px;text-align:left" onClick=${() => setAddOpen(v => !v)}>${addOpen ? "▾" : "▸"} ➕ Add / import parts</button>
+      ${addOpen && html`<div style="margin-top:8px">
+        <div class="row" style="gap:6px">
+          <input style="flex:1" name="bt-want-part" autocomplete="off" autocapitalize="characters" placeholder="Part # to add" value=${wantPart} onInput=${e => setWantPart(e.target.value)} />
+          <input style="width:52px;text-align:center" inputmode="numeric" value=${wantQty} onInput=${e => setWantQty(e.target.value)} />
+          <button class="step plus" style="width:40px" disabled=${!wantPart.trim()}
+            onClick=${() => { upsertMoc({ ...moc, wanted: [...wanted, { partNum: wantPart.trim(), colorName: "", qty: parseInt(wantQty) || 1 }] }); setWantPart(""); setWantQty("1"); }}>+</button>
+        </div>
+        <button class="ghost" style="margin-top:8px" onClick=${() => setImportOpen(true)}>⬇ Import from XML / CSV…</button>
+      </div>`}
+
+      ${wanted.length > 0 && html`<button class="ghost" style="margin-top:8px;color:var(--red);border-color:var(--red)"
+        onClick=${() => { if (confirm("Clear the entire parts list?")) { setSel(new Set()); upsertMoc({ ...moc, wanted: [] }); } }}>Clear parts list</button>`}
+    </${Acc}>
 
     <div class="card">
       <${Label}>Instructions (PDF) · ${(moc.pdfs || []).length}</${Label}>
