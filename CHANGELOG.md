@@ -8,6 +8,14 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.37.0 — 2026-06-18
+
+- **MOC detail redesign — Parts List accordion.** The old "Wanted parts (target build)" card is now a collapsible **Parts List** block: the full bill of materials for the build (you may or may not own each part — this is distinct from a *want* list, which is only what you still need to buy). Colour groups + thumbnails as before, with a `have/total · %` summary on the accordion header so it reads while collapsed.
+- **Mark parts → want list (bulk or individual).** Tick parts with a per-row checkbox (or tap the row), or **Select all missing**, then **🛒 Add N ticked parts to want list** pushes just those onto the MOC-linked want list — shortfall when partly had, else full qty. Replaces the old all-or-nothing "Add missing to want list" button.
+- **Minimal Add / import.** A collapsible **➕ Add / import parts** inside the Parts List (hidden until tapped) holds the by-hand part-add field and the **XML / CSV import** — keeps the list clean while sorting.
+- **Bug — qty steppers.** Each parts-list row now has **− / +** steppers to adjust the needed quantity (✕ still removes the line).
+- **Bug — part thumbnails.** A row with no BrickLink colour id (hand-added or imported without one) now falls back to a **real allocated part's image**, so the picture shows once you've gathered the brick.
+
 ## v0.36.0 — 2026-06-17
 
 - **Want lists & MOC wanted parts now read like a set's parts list.** Collapsible **colour groups** (tap a colour to expand/collapse, with have/need counts and a chevron) and **part thumbnails**. Thumbnails come from the BrickLink colour id captured at import (`img.bricklink.com/ItemImage/PN/{colorId}/{part}.png`), or the set part's own image when pushed from a set. *(Re-import an existing MOC list to pick up the colour ids for thumbnails.)*
