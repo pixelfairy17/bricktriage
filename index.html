@@ -89,8 +89,12 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.38.0";
+const APP_VERSION = "0.39.0";
 const CHANGELOG = [
+  ["0.39.0", "2026-06-19", [
+    "Set parts list: the select checkbox is now ALWAYS shown next to each part (no more ☑ Select mode toggle). Tick any part and the batch bar appears with Mark as have (75%) and → MOC (25%) side by side on one line; All shown / None kept.",
+    "Checkbox styling unified — the MOC Parts List now uses the same round ✓ checkbox as the set parts list (was a ☐/☑ glyph).",
+  ]],
   ["0.38.0", "2026-06-19", [
     "MOC Parts List rows now read like a set's parts list: the have/need count sits in the middle between − / + (which edit the needed qty). The have-count now also includes pieces sitting in sets you mark ♻️ Donor, so you can see what you can pull (shown as 'N in donor sets' on the row).",
     "Swipe a parts-list row left to delete it (replaces the easy-to-mis-tap ✕). Clear parts list moved to a small right-aligned button on the Select-all-missing row.",
@@ -1854,7 +1858,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
             ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i), donors = donorFor(w.partNum);
               return html`<${SwipeRow} key=${i} onDelete=${() => { setSel(new Set()); upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) }); }}>
                 <div class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 8px;${ok && !picked ? "opacity:.7" : ""}`}>
-                <button class="step" style=${`width:28px;height:28px;font-size:13px;flex-shrink:0;${picked ? "color:var(--blue);border-color:var(--blue)" : ""}`} onClick=${() => toggleSel(i)}>${picked ? "☑" : "☐"}</button>
+                <button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${picked ? "var(--blue)" : "var(--dim)"};background:${picked ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${() => toggleSel(i)}>${picked ? "✓" : ""}</button>
                 <span style="flex-shrink:0;cursor:pointer" onClick=${() => setViewPart({ img: partImgFor(w), partName: w.name || w.partNum, partNumber: w.partNum, colorName: w.colorName || "" })}>
                   <${Thumb} src=${partImgFor(w)} size=${34} />
                 </span>
@@ -2715,8 +2719,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   // photo gallery (item 7): catalog image + BrickLink box image (hotlink-tested per set via onerror)
   const [boxImgOk, setBoxImgOk] = useState(true);
   const [galleryAt, setGalleryAt] = useState(null); // null | index
-  // parts select mode (item 5)
-  const [selMode, setSelMode] = useState(false);
+  // parts multi-select — checkboxes are always shown; the batch bar appears when any are ticked
   const [selIds, setSelIds] = useState(() => new Set());
   const toggleSelPart = id => setSelIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const [viewPart, setViewPart] = useState(null); // #3 full-size part image
@@ -2763,7 +2766,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     }
     upsertMoc({ ...mo, parts, status: mo.status === "disassembled" ? "building" : mo.status });
     save("bt:lastMoc", mocId);
-    setBulkMoc(false); setSelMode(false); setSelIds(new Set());
+    setBulkMoc(false); setSelIds(new Set());
   };
   if (!rec) return html`<div class="card">Set not found in storage. <button class="ghost" onClick=${onBack}>Back</button></div>`;
   const { pct, found, total } = completion(rec.parts);
@@ -2800,13 +2803,6 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     setLastAct(null); setConfirmReset(false);
   };
   // #5: tap a row in select mode → mark all present; tap again → back to the MOC-allocated floor (or 0)
-  const toggleFull = p => change(r => {
-    const x = r.parts.find(y => y.id === p.id);
-    if (x) { const floor = (rowAlloc.get(x.id) || []).reduce((a, z) => a + z.qty, 0);
-      x.qtyFound = x.qtyFound >= x.qtyNeeded ? floor : x.qtyNeeded; }
-    return r;
-  });
-
   const groups = useMemo(() => {
     const ql = q.trim().toLowerCase();
     const list = rec.parts.filter(p =>
@@ -3084,13 +3080,6 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
           onClick=${() => setGroupMode(groupMode === "group" ? "exact" : "group")} />
         <${Chip} label=${openColors.size >= groups.length + 1 && groups.length > 0 ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false}
           onClick=${() => setOpenColors(openColors.size >= groups.length + 1 ? new Set() : new Set(["__acc", ...groups.map(g => g[0])]))} />
-        <${Chip} label=${selMode ? "✓ Done" : "☑ Select"} color="var(--green)" active=${selMode}
-          onClick=${() => {
-            const entering = !selMode;
-            setSelMode(entering); setSelIds(new Set());
-            // #5: entering select mode expands every part group so all rows are reachable to select
-            if (entering) setOpenColors(new Set(["__acc", ...groups.map(g => g[0])]));
-          }} />
         <${Chip} label="↺ Reset" color="var(--red)" active=${false} onClick=${() => setConfirmReset(v => !v)} />
       </div>
       ${confirmReset && html`<div class="row" style="gap:8px;margin-top:10px;align-items:center">
@@ -3133,9 +3122,9 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
             <span class="dim">${open ? "▾" : "▸"}</span>
           </span>
         </button>
-        ${open && html`<div style="margin-top:6px">${list.map(p => html`<${PartRow} key=${(selMode ? "s-" : "n-") + p.id} p=${p} bump=${bump}
+        ${open && html`<div style="margin-top:6px">${list.map(p => html`<${PartRow} key=${p.id} p=${p} bump=${bump}
           alloc=${rowAlloc.get(p.id)} onMove=${() => setMoveP(p)} onView=${() => setViewPart(p)} mode=${logMode}
-          selMode=${selMode} selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)} onToggleFull=${toggleFull}
+          selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)}
           recent=${lastAct && lastAct.id === p.id ? lastAct : null} />`)}</div>`}
       </div>`;
     })}
@@ -3181,11 +3170,12 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       </div>`;
     })()}
 
-    ${selMode && (() => {
-      // #5: detect the selection's state — if everything picked is already fully have, flip the action
+    ${selIds.size > 0 && (() => {
+      // detect the selection's state — if everything picked is already fully have, flip the action
       // to "mark as not have" (down to any MOC-allocated floor); otherwise mark them all have.
       const selParts = rec.parts.filter(p => selIds.has(p.id));
       const allHave = selParts.length > 0 && selParts.every(p => p.qtyFound >= p.qtyNeeded);
+      const movable = selParts.reduce((a, p) => a + Math.max(0, p.qtyFound - allocatedRow(mocs, setNum, p.id)), 0);
       return html`<div style="position:sticky;bottom:0;margin:0 -16px;background:var(--panel2);border-top:1px solid var(--line);padding:10px 16px 12px;z-index:9">
       <div class="row" style="gap:8px;margin-bottom:8px">
         <span class="mono dim" style="font-size:12px;flex:1">${selIds.size} selected</span>
@@ -3193,16 +3183,17 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
           onClick=${() => setSelIds(new Set(groups.flatMap(([, l]) => l.map(p => p.id))))}>All shown</button>
         <button class="chip" style="border-color:var(--line);color:var(--dim)" onClick=${() => setSelIds(new Set())}>None</button>
       </div>
-      <button class=${allHave ? "btn red" : "btn green"} disabled=${!selIds.size} onClick=${() => {
-        change(r => { for (const p of r.parts) if (selIds.has(p.id)) {
-          if (allHave) { const floor = (rowAlloc.get(p.id) || []).reduce((a, z) => a + z.qty, 0); p.qtyFound = floor; }
-          else p.qtyFound = p.qtyNeeded;
-        } return r; });
-        setSelIds(new Set());
-      }}>${allHave ? `Mark ${selIds.size} as not have` : `Mark ${selIds.size} as have (full qty)`}</button>
-      ${(() => { const movable = selParts.reduce((a, p) => a + Math.max(0, p.qtyFound - allocatedRow(mocs, setNum, p.id)), 0);
-        return html`<button class="ghost" style="margin-top:8px;color:var(--purple);border-color:var(--purple)" disabled=${!movable}
-          onClick=${() => setBulkMoc(true)}>→ Move ${movable || ""} found ${movable === 1 ? "part" : "parts"} to a MOC</button>`; })()}
+      <div class="row" style="gap:8px">
+        <button class=${allHave ? "btn red" : "btn green"} style="flex:3" disabled=${!selIds.size} onClick=${() => {
+          change(r => { for (const p of r.parts) if (selIds.has(p.id)) {
+            if (allHave) { const floor = (rowAlloc.get(p.id) || []).reduce((a, z) => a + z.qty, 0); p.qtyFound = floor; }
+            else p.qtyFound = p.qtyNeeded;
+          } return r; });
+          setSelIds(new Set());
+        }}>${allHave ? `Mark ${selIds.size} as not have` : `Mark ${selIds.size} as have`}</button>
+        <button class="ghost" style="flex:1;color:var(--purple);border-color:var(--purple)" disabled=${!movable}
+          onClick=${() => setBulkMoc(true)}>→ MOC${movable ? ` (${movable})` : ""}</button>
+      </div>
     </div>`;
     })()}
 
@@ -3387,7 +3378,7 @@ function BulkMocPicker({ mocs, upsertMoc, count, onPick, onClose }) {
   </div></${Portal}>`;
 }
 
-function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = false, onSel, onToggleFull, mode = "find", recent = null }) {
+function PartRow({ p, bump, alloc, onMove, onView, selected = false, onSel, mode = "find", recent = null }) {
   const isRem = mode === "remaining";
   const full = p.qtyFound >= p.qtyNeeded;
   const done = full;
@@ -3402,41 +3393,24 @@ function PartRow({ p, bump, alloc, onMove, onView, selMode = false, selected = f
     : html`<div class="partimg" style="background:var(--panel2)" onClick=${ev => { ev.stopPropagation(); onView?.(p); }}></div>`;
   const spareTag = p.isSpare ? html` <span style="color:var(--blue);border:1px solid var(--blue);border-radius:4px;padding:0 4px;font-size:9px;font-weight:800;letter-spacing:.5px">SPARE</span>` : "";
   const allocLine = allocQty > 0 && html`<div class="ellip" style="font-size:11px;color:var(--blue);font-weight:700;margin-top:2px">♻️ ${(alloc || []).map(x => `${x.qty} → ${x.mocName}`).join(" · ")}</div>`;
-
-  if (selMode) {
-    // #4/#5: select mode keeps − / qty / + steppers; the checkbox batch-selects, and tapping the
-    // body marks the row all-present (greys it out — tap again to undo). Everything autosaves.
-    return html`<div style="margin-bottom:6px">
-      <div class="row" style=${`background:var(--panel);border:1px solid ${full ? "var(--green)" : selected ? "var(--blue)" : "var(--line)"};border-radius:12px;padding:8px 10px;opacity:${full ? .55 : 1}`}>
-        <button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${selected ? "var(--blue)" : "var(--dim)"};background:${selected ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${onSel}>${selected ? "✓" : ""}</button>
-        ${imgEl}
-        <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => onToggleFull?.(p)}>
-          <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
-          <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber}${spareTag}</div>
-          ${allocLine}
-        </div>
-        <button class="step" style="width:34px" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>
-        <div class="mono" style=${`font-size:14px;font-weight:700;min-width:40px;text-align:center;color:${full ? "var(--green)" : "var(--text)"}`}>${p.qtyFound}/${p.qtyNeeded}</div>
-        <button class="step plus" style="width:34px" disabled=${full} onClick=${() => bump(p.id, +1)}>+</button>
-      </div>
-      ${recentLine}
-    </div>`;
-  }
+  // checkbox is ALWAYS shown (circular ✓, blue when picked) so a part can be batch-selected at any time
+  const checkbox = onSel && html`<button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${selected ? "var(--blue)" : "var(--dim)"};background:${selected ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${onSel}>${selected ? "✓" : ""}</button>`;
   const numCol = isRem ? (full ? "var(--green)" : "var(--yellow)") : (done ? "var(--green)" : "var(--text)");
-  const border = (isRem ? full : done) ? "var(--green)" : "var(--line)";
-  const opacity = isRem ? 1 : (done ? .65 : 1);
+  const border = selected ? "var(--blue)" : ((isRem ? full : done) ? "var(--green)" : "var(--line)");
+  const opacity = isRem ? 1 : (done && !selected ? .65 : 1);
   return html`<div style="margin-bottom:6px">
-    <div class="row" style=${`background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;opacity:${opacity}`}>
+    <div class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;opacity:${opacity}`}>
+      ${checkbox}
       ${imgEl}
       <div style="flex:1;min-width:0" onClick=${() => bump(p.id, full ? -p.qtyNeeded : p.qtyNeeded - p.qtyFound)}>
         <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
         <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber} · <span style="color:var(--yellow)">${partRate(p).label}</span>${spareTag}</div>
         ${allocLine}
       </div>
-      ${onMove && p.qtyFound > 0 && html`<button class="step" style="width:34px;color:var(--purple);border-color:var(--purple)" onClick=${onMove}>→</button>`}
-      <button class="step" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>
-      <div class="mono" style=${`font-size:14px;font-weight:700;min-width:40px;text-align:center;color:${numCol}`}>${p.qtyFound}/${p.qtyNeeded}</div>
-      <button class="step plus" disabled=${full} onClick=${() => bump(p.id, +1)}>+</button>
+      ${onMove && p.qtyFound > 0 && html`<button class="step" style="width:32px;color:var(--purple);border-color:var(--purple)" onClick=${onMove}>→</button>`}
+      <button class="step" style="width:34px" disabled=${p.qtyFound === 0} onClick=${() => bump(p.id, -1)}>−</button>
+      <div class="mono" style=${`font-size:14px;font-weight:700;min-width:38px;text-align:center;color:${numCol}`}>${p.qtyFound}/${p.qtyNeeded}</div>
+      <button class="step plus" style="width:34px" disabled=${full} onClick=${() => bump(p.id, +1)}>+</button>
     </div>
     ${recentLine}
   </div>`;

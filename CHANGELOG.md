@@ -8,6 +8,11 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.39.0 — 2026-06-19
+
+- **Set parts list — checkbox always on.** Every part row now shows the select checkbox at all times (the **☑ Select** mode toggle is gone). Tick any part and the sticky batch bar appears with **Mark as have** (75%) and **→ MOC** (25%) **side by side on one line** (was two stacked full-width buttons). **All shown / None** kept.
+- **Unified checkbox look.** The **MOC Parts List** now uses the same round **✓** checkbox as the set parts list (was a ☐/☑ glyph).
+
 ## v0.38.0 — 2026-06-19
 
 - **MOC Parts List rows now read like a set's parts list.** The **have/need** count sits in the middle between the **− / +** steppers (which edit the *needed* qty). The have-count now also counts pieces sitting in sets you flag **♻️ Donor**, so it reflects what you can actually pull — surfaced on the row as **"N in donor sets"**.
