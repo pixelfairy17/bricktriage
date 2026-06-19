@@ -89,8 +89,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.44.0";
+const APP_VERSION = "0.45.0";
 const CHANGELOG = [
+  ["0.45.0", "2026-06-19", [
+    "Part-type grouping: 'Plant…' parts now always group under 🌿 Plants — even 'Plant, Plate Round 1x1 with Leaves' (was landing in ▭ Plates). Minifig 'Equipment'/'Utensil' parts (e.g. Equipment Dish) now group under 🧑 Minifig & gear instead of 🧱 Bricks.",
+  ]],
   ["0.44.0", "2026-06-19", [
     "MOC Parts List: swipe a row left now reveals Edit as well as Delete. Edit opens a sheet to change the part's colour (picked from the real colours that part comes in on Rebrickable — each shown as the part rendered in that colour) and its quantity (typeable number field).",
     "MOC Parts List colours now match: picking/editing a colour stores the colour-CORRECT Rebrickable image (the generic part image is just the default colour, which is why thumbnails didn't match). 🖼 Get part images is colour-aware too — re-run it, or edit a line's colour, to fix existing rows.",
@@ -461,23 +464,27 @@ const groupRank = g => g === "Other" ? "￿" : g;
 // groups (emoji + label). Matching order is specific→generic (first keyword hit wins); refine from
 // real use like PART_RATES / COLOR_GROUPS. Names are matched against the part NAME, lower-cased.
 const PART_TYPES = [
-  ["🧑 Minifig & gear", ["minifig", "torso", "headgear", "hair", "hat ", "helmet", " cap", "hood", "mask", "sword", "weapon", "shield", "knife", "spear", "pistol", "rifle", "blaster", "backpack", "goblet", "crown", "epaulette"]],
+  ["🧑 Minifig & gear", ["minifig", "equipment", "utensil", "torso", "headgear", "hair", "hat ", "helmet", " cap", "hood", "mask", "sword", "weapon", "shield", "knife", "spear", "pistol", "rifle", "blaster", "backpack", "goblet", "crown", "epaulette"]],
   ["⚙️ Technic", ["technic", "axle", "liftarm", "beam", " gear", "pneumatic", "shock", "steering", "worm", "differential", "cam ", "bush"]],
   ["🛞 Wheels & tyres", ["wheel", "tyre", "tire", "tread", " rim", "mudguard", "hubcap"]],
   ["🪟 Windows, doors & panels", ["window", "door", "windscreen", "windshield", "glass", "panel", " wall", "fence", "gate", "shutter", "cockpit"]],
   ["🪝 Brackets, clips & hinges", ["bracket", "clip", "hinge", "finger", "latch", "magnet", "ball joint", "tow ball", "towball"]],
   ["🪜 Bars, rods & ladders", ["bar ", " bar", "rod", "antenna", "lever", "handle", "ladder", "hose", "string", "chain", "whip"]],
-  // The leading NOUN wins, so Tiles / Plates / Bricks sit ABOVE Slopes & wedges AND above Plants:
+  // "Plant…" always wins — even "Plant, Plate Round 1x1 with 3 Leaves" — so it lands in 🌿 Plants,
+  // not ▭ Plates. Kept as its own top-priority entry (same label as the broad plants set below).
+  ["🌿 Plants, food & animals", ["plant"]],
+  // Otherwise the leading NOUN wins, so Tiles / Plates / Bricks sit ABOVE Slopes & wedges and above
+  // the broad plants/food/animal keywords:
   //   "Tile, Curved / Macaroni" → Tiles (not Slopes via "curved"),
-  //   "Plate, Round / Special" → Plates,  "Plate … with Leaf/Wing" → Plates (not Plants),
-  //   "Brick, Round / Arch / Curved" → Bricks,  plain "Slope/Wedge/Cheese" → Slopes,  "Plant…" → Plants.
+  //   "Plate, Round / Special" → Plates,  "Plate … with Leaf/Wing" → Plates,
+  //   "Brick, Round / Arch / Curved" → Bricks,  plain "Slope/Wedge/Cheese" → Slopes.
   // There's no standalone Round bucket; genuinely round 3D elements (cone/cylinder/dome/dish/barrel)
-  // fold into Bricks.
+  // fold into Bricks (but minifig "Equipment, Dish"-style utensils are caught by Minifig & gear above).
   ["⬛ Tiles", ["tile"]],
   ["▭ Plates", ["plate"]],
   ["🧱 Bricks", ["brick", "cone", "cylinder", "dome", "dish", "barrel"]],
   ["◣ Slopes & wedges", ["slope", "wedge", "roof", "cheese", "arch", "curved"]],
-  ["🌿 Plants, food & animals", ["plant", "flower", "leaf", "tree", "grass", "food", "fruit", "animal", "fish", "wing", "egg", "bone"]],
+  ["🌿 Plants, food & animals", ["flower", "leaf", "tree", "grass", "food", "fruit", "animal", "fish", "wing", "egg", "bone"]],
 ];
 const PART_TYPE_DISPLAY = ["🧱 Bricks", "▭ Plates", "⬛ Tiles", "◣ Slopes & wedges",
   "🪝 Brackets, clips & hinges", "🪜 Bars, rods & ladders", "🪟 Windows, doors & panels", "⚙️ Technic",

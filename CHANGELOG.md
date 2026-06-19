@@ -8,6 +8,10 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.45.0 — 2026-06-19
+
+- **Part-type grouping fixes.** *Plant…* parts now always group under **🌿 Plants** — even *Plant, Plate Round 1x1 with 3 Leaves* (was landing in **▭ Plates** because of the "plate" in its name). Minifig **Equipment / Utensil** parts (e.g. *Equipment, Dish*) now group under **🧑 Minifig & gear** instead of **🧱 Bricks**.
+
 ## v0.44.0 — 2026-06-19
 
 - **MOC Parts List — Edit in the swipe menu.** Swiping a parts-list row left now reveals **Edit** as well as **Delete**. Edit opens a sheet to change the part's **colour** — picked from the real colours that part comes in on Rebrickable, each shown as the part *rendered in that colour* — and its **quantity** (a typeable number field).
