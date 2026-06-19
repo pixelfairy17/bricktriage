@@ -89,8 +89,15 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.37.0";
+const APP_VERSION = "0.38.0";
 const CHANGELOG = [
+  ["0.38.0", "2026-06-19", [
+    "MOC Parts List rows now read like a set's parts list: the have/need count sits in the middle between − / + (which edit the needed qty). The have-count now also includes pieces sitting in sets you mark ♻️ Donor, so you can see what you can pull (shown as 'N in donor sets' on the row).",
+    "Swipe a parts-list row left to delete it (replaces the easy-to-mis-tap ✕). Clear parts list moved to a small right-aligned button on the Select-all-missing row.",
+    "Part pictures in the MOC Parts List: thumbnails now also reuse images from any tracked set, are tap-to-enlarge (with a BrickLink lookup), and a 🖼 Get part images button pulls real images + names from Rebrickable for imported/hand-added lines.",
+    "Add parts to a MOC by searching Rebrickable by NAME (not just part number) — results show a thumbnail + name to add in one tap.",
+    "Bug: a set with 2× of the same minifig now doubles that fig's parts (qty needed). Re-fetch minifigs on an already-tracked set to apply (↻ Re-fetch in the Minifigs accordion).",
+  ]],
   ["0.37.0", "2026-06-18", [
     "MOC detail redesign — the 'Wanted parts (target build)' card is now a collapsible Parts List accordion: the full bill of materials for the build (you may or may not own each part). Colour groups + thumbnails as before, now with a have/total · % summary on the header so it reads at a glance while collapsed.",
     "Mark parts → want list: tick parts individually (checkbox or tap the row) or Select all missing, then '🛒 Add N ticked parts to want list' pushes just those onto the MOC-linked want list (shortfall when partly had, else full qty). Replaces the old all-or-nothing 'Add missing' button.",
@@ -651,13 +658,15 @@ async function fetchSetMinifigs(setNum, onProgress) {
     const rows = [];
     let pu = `https://rebrickable.com/api/v3/lego/minifigs/${encodeURIComponent(f.set_num)}/parts/?page_size=1000`;
     while (pu) { const j = await rbFetch(pu); rows.push(...(j.results || [])); pu = j.next; }
+    const figQty = f.quantity || 1;
     out.push({
-      figNum: f.set_num, name: f.set_name, img: f.set_img_url, quantity: f.quantity || 1,
+      figNum: f.set_num, name: f.set_name, img: f.set_img_url, quantity: figQty,
       parts: rows.map((r, i) => ({
         id: `${f.set_num}|${r.part?.part_num}|${r.color?.id}|${r.is_spare ? "s" : "n"}|${i}`,
         partNumber: r.part?.part_num, partName: r.part?.name,
         colorID: r.color?.id, colorName: r.color?.name,
-        img: r.part?.part_img_url, qtyNeeded: r.quantity, qtyFound: 0, isSpare: !!r.is_spare,
+        // a set with 2× of the same fig needs 2× of each of its parts — bake the fig count into qtyNeeded
+        img: r.part?.part_img_url, qtyNeeded: r.quantity * figQty, qtyFound: 0, isSpare: !!r.is_spare,
       })),
     });
   }
@@ -772,6 +781,25 @@ function Thumb({ src, size = 40 }) {
   const [err, setErr] = useState(false);
   if (!src || err) return html`<div class="partimg" style=${`width:${size}px;height:${size}px;background:var(--panel2);flex-shrink:0`}></div>`;
   return html`<img class="partimg" style=${`width:${size}px;height:${size}px`} src=${src} loading="lazy" onError=${() => setErr(true)}/>`;
+}
+// swipe-left a row to reveal a Delete button (iOS-style) — safer than a tap-target ✕ that's easy to hit by accident
+function SwipeRow({ children, onDelete }) {
+  const W = 84; // revealed delete-button width
+  const [open, setOpen] = useState(false);
+  const [dx, setDx] = useState(0);
+  const startX = useRef(null), startOpen = useRef(false);
+  const onStart = e => { startX.current = e.touches[0].clientX; startOpen.current = open; };
+  const onMove = e => { if (startX.current == null) return; const d = e.touches[0].clientX - startX.current + (startOpen.current ? -W : 0); setDx(Math.max(-W, Math.min(0, d))); };
+  const onEnd = () => { setOpen(dx < -W / 2); setDx(0); startX.current = null; };
+  const tx = startX.current != null ? dx : (open ? -W : 0);
+  return html`<div style="position:relative;margin-bottom:5px;border-radius:10px;overflow:hidden">
+    <button class="step" style=${`position:absolute;top:0;right:0;height:100%;width:${W}px;border-radius:0;background:var(--red);border:none;color:#fff;font-weight:700;font-size:13px`}
+      onClick=${() => { setOpen(false); onDelete?.(); }}>Delete</button>
+    <div style=${`transform:translateX(${tx}px);transition:${startX.current == null ? "transform .18s" : "none"};touch-action:pan-y`}
+      onTouchStart=${onStart} onTouchMove=${onMove} onTouchEnd=${onEnd}>
+      ${children}
+    </div>
+  </div>`;
 }
 const Header = ({ title, sub, onBack, right }) => html`
   <div class="row" style="margin-bottom:14px">
@@ -1536,13 +1564,41 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   const pdfInput = useRef(null);
   const [importMsg, setImportMsg] = useState("");
   const [wtbMsg, setWtbMsg] = useState("");
+  const [viewPart, setViewPart] = useState(null); // wanted line shown full-size (tap thumbnail)
+  const [imgBusy, setImgBusy] = useState(false);   // resolving part images from Rebrickable
+  const [searchQ, setSearchQ] = useState("");      // add-parts: search Rebrickable by name
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchRes, setSearchRes] = useState(null);
+  const [searchMsg, setSearchMsg] = useState("");
   // a WTB list linked to this MOC contributes its "got" (bought) parts toward the plan's have-count
   const linkedWtb = (wtbLists || []).find(l => l.linkType === "moc" && l.linkId === moc?.id);
-  // NF2: have-count for a wanted line = real parts allocated whose part number matches, PLUS any
-  // bought (got) parts from the linked want list. Base-match (3023 import ↔ 3023b allocated).
+  // Scan every tracked set's full record ONCE for: (a) a part image we can reuse here (same source the
+  // sets list uses — Rebrickable part_img_url), and (b) free pieces sitting in DONOR sets so the
+  // have-count reflects what you can pull. Keyed by base part number so a BrickLink import matches.
+  const setData = useMemo(() => {
+    const img = new Map(), donor = new Map();
+    for (const e of (index || [])) {
+      const rec = load(`bt:set:${e.setNum}`, null);
+      if (!rec) continue;
+      for (const p of (rec.parts || [])) {
+        const k = partKey(p.partNumber);
+        if (p.img && !img.has(k)) img.set(k, p.img);
+        if (rec.donor) {
+          const free = Math.max(0, (p.qtyFound || 0) - allocatedRow(mocs, e.setNum, p.id));
+          if (free > 0) donor.set(k, (donor.get(k) || 0) + free);
+        }
+      }
+    }
+    return { img, donor };
+  }, [index, mocs]);
+  const imgIndexFor = pn => setData.img.get(partKey(pn)) || null;
+  const donorFor = pn => setData.donor.get(partKey(pn)) || 0;
+  // have-count for a wanted line = real parts allocated to THIS moc + bought (got) parts from the
+  // linked want list + free pieces available in DONOR sets. Base-match (3023 import ↔ 3023b allocated).
   const haveFor = pn => {
     let n = (moc?.parts || []).reduce((a, x) => a + (String(x.partNumber) === String(pn) || partKey(x.partNumber) === partKey(pn) ? x.qty : 0), 0);
     if (linkedWtb) n += (linkedWtb.parts || []).reduce((a, w) => a + (w.got && (String(w.partNum) === String(pn) || partKey(w.partNum) === partKey(pn)) ? (w.qty || 0) : 0), 0);
+    n += donorFor(pn);
     return n;
   };
   const wanted = moc?.wanted || [];
@@ -1552,7 +1608,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   // BUG FIX (part picture): fall back to a real allocated part's image (Rebrickable url) when the
   // imported/hand-added line has no BrickLink colour id to build an image url from.
   const allocImg = pn => (moc?.parts || []).find(a => a.img && (String(a.partNumber) === String(pn) || partKey(a.partNumber) === partKey(pn)))?.img || null;
-  const partImgFor = w => w.img || blPartImg(w.partNum, w.blColorId) || allocImg(w.partNum);
+  const partImgFor = w => w.img || blPartImg(w.partNum, w.blColorId) || allocImg(w.partNum) || imgIndexFor(w.partNum);
   // BUG FIX (qty stepper): edit a parts-list line's needed quantity in place (min 1; ✕ to remove).
   const setWantQtyAt = (i, q) => upsertMoc({ ...moc, wanted: wanted.map((w, j) => j === i ? { ...w, qty: Math.max(1, q) } : w) });
   const toggleSel = i => setSel(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; });
@@ -1567,6 +1623,42 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     setSel(new Set());
     setWtbMsg(`Added ${picks.length} part${picks.length === 1 ? "" : "s"} to a want list.`);
     setTimeout(() => setWtbMsg(""), 3500);
+  };
+  // Pull real part images (+ names) from Rebrickable for any line missing one — same source the sets
+  // list uses, so imported/hand-added parts get a picture too. Stores onto the line permanently.
+  const fetchPartImages = async () => {
+    if (!getKey().trim()) { setWtbMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setWtbMsg(""), 3500); return; }
+    setImgBusy(true);
+    const next = [...wanted]; let changed = 0;
+    for (let i = 0; i < next.length; i++) {
+      const w = next[i];
+      if (w.img) continue;
+      try { const p = await resolveRbPart(w.partNum);
+        if (p?.part_img_url) { next[i] = { ...w, img: p.part_img_url, name: w.name || p.name }; changed++; }
+      } catch {}
+    }
+    if (changed) upsertMoc({ ...moc, wanted: next });
+    setImgBusy(false);
+    setWtbMsg(changed ? `Fetched ${changed} part image${changed === 1 ? "" : "s"}.` : "No new images found (parts may not be on Rebrickable).");
+    setTimeout(() => setWtbMsg(""), 3500);
+  };
+  // search Rebrickable parts by NAME or number so a part can be added without knowing its number
+  const searchParts = async () => {
+    const ql = searchQ.trim();
+    if (!ql) return;
+    if (!getKey().trim()) { setSearchMsg("Add your Rebrickable key in Settings first."); return; }
+    setSearchBusy(true); setSearchMsg(""); setSearchRes(null);
+    try {
+      const j = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/?search=${encodeURIComponent(ql)}&page_size=24`);
+      setSearchRes(j.results || []);
+      if (!(j.results || []).length) setSearchMsg("No parts matched.");
+    } catch (e) { setSearchMsg(e.message || "Search failed."); }
+    setSearchBusy(false);
+  };
+  const addSearchResult = p => {
+    upsertMoc({ ...moc, wanted: [...wanted, { partNum: p.part_num, name: p.name, img: p.part_img_url, colorName: "", qty: 1 }] });
+    setSearchMsg(`Added ${p.name || p.part_num}.`);
+    setTimeout(() => setSearchMsg(""), 2500);
   };
   const doImport = () => {
     const parsed = parseWantedList(importText);
@@ -1731,11 +1823,13 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     <${Acc} title="Parts List" open=${partsOpen} onToggle=${() => setPartsOpen(v => !v)}
       summary=${wantTotal ? `${wantHave}/${wantTotal} · ${wantPct}%` : "empty"}>
       ${importMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin:0 0 8px">✓ ${importMsg}</div>`}
-      <div class="dim" style="font-size:12px;margin-bottom:8px">Every part this build needs — you may or may not own each one. Tick parts (individually or <b>Select all missing</b>) and push them to a want list to buy. Have-counts match the real bricks you gather with <b>+ Add parts</b> below.</div>
+      <div class="dim" style="font-size:12px;margin-bottom:8px">Every part this build needs — you may or may not own each one. The <b>have/need</b> count includes pieces in sets you mark as <b>♻️ Donor</b>. Tick parts (or <b>Select all missing</b>) to push to a want list; <b>swipe a row left</b> to delete it.</div>
       ${wanted.length === 0 && html`<div class="dim" style="font-size:12px;margin-bottom:8px">No parts yet — open <b>➕ Add / import parts</b> below to paste a Studio (XML) / Rebrickable (CSV) list or add part numbers by hand.</div>`}
       ${wanted.length > 0 && html`<div class="row" style="gap:8px;margin-bottom:8px">
         <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${selectAllMissing}>Select all missing</button>
         ${sel.size > 0 && html`<button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${() => setSel(new Set())}>Clear selection</button>`}
+        <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto;margin-left:auto;color:var(--red);border-color:var(--red)"
+          onClick=${() => { if (confirm("Clear the entire parts list?")) { setSel(new Set()); upsertMoc({ ...moc, wanted: [] }); } }}>Clear parts list</button>
       </div>`}
       ${(() => {
         if (!wanted.length) return null;
@@ -1757,18 +1851,21 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
               </span>
             </button>
             ${open && html`<div style="margin-top:6px">
-            ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i);
-              return html`<div key=${i} class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 8px;margin-bottom:5px;${ok && !picked ? "opacity:.7" : ""}`}>
+            ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i), donors = donorFor(w.partNum);
+              return html`<${SwipeRow} key=${i} onDelete=${() => { setSel(new Set()); upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) }); }}>
+                <div class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 8px;${ok && !picked ? "opacity:.7" : ""}`}>
                 <button class="step" style=${`width:28px;height:28px;font-size:13px;flex-shrink:0;${picked ? "color:var(--blue);border-color:var(--blue)" : ""}`} onClick=${() => toggleSel(i)}>${picked ? "☑" : "☐"}</button>
-                <${Thumb} src=${partImgFor(w)} size=${34} />
+                <span style="flex-shrink:0;cursor:pointer" onClick=${() => setViewPart({ img: partImgFor(w), partName: w.name || w.partNum, partNumber: w.partNum, colorName: w.colorName || "" })}>
+                  <${Thumb} src=${partImgFor(w)} size=${34} />
+                </span>
                 <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => toggleSel(i)}>
                   <div class="clamp2" style="font-size:13px;font-weight:600;line-height:1.2">${w.name || w.partNum}</div>
-                  <div class="dim mono" style=${`font-size:11px;color:${ok ? "var(--green)" : "var(--dim)"}`}>${w.colorName || "—"} · ${w.partNum} · ${Math.min(have, w.qty)}/${w.qty} have</div>
+                  <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}${donors > 0 ? html` · <span style="color:var(--blue)">${donors} in donor sets</span>` : ""}</div>
                 </div>
                 <button class="step" style="width:28px;height:28px;flex-shrink:0" disabled=${(w.qty || 1) <= 1} onClick=${() => setWantQtyAt(i, (w.qty || 1) - 1)}>−</button>
+                <div class="mono" style=${`font-size:13px;font-weight:700;min-width:36px;text-align:center;flex-shrink:0;color:${ok ? "var(--green)" : "var(--text)"}`}>${Math.min(have, w.qty)}/${w.qty}</div>
                 <button class="step plus" style="width:28px;height:28px;flex-shrink:0" onClick=${() => setWantQtyAt(i, (w.qty || 1) + 1)}>+</button>
-                <button class="step" style="width:28px;height:28px;font-size:11px;flex-shrink:0;color:var(--red);border-color:var(--red)" onClick=${() => { setSel(new Set()); upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) }); }}>✕</button>
-              </div>`; })}
+              </div></${SwipeRow}>`; })}
             </div>`}
           </div>`;
         });
@@ -1776,19 +1873,36 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
       ${sel.size > 0 && html`<button class="btn blue" style="margin-top:8px" onClick=${addSelToWant}>🛒 Add ${sel.size} ticked part${sel.size === 1 ? "" : "s"} to want list</button>`}
       ${wtbMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin-top:6px">✓ ${wtbMsg}</div>`}
 
+      ${wanted.length > 0 && wanted.some(w => !w.img) && html`<button class="ghost" style="margin-top:8px;padding:9px" disabled=${imgBusy} onClick=${fetchPartImages}>${imgBusy ? "Fetching images…" : "🖼 Get part images"}</button>`}
+
       <button class="ghost" style="margin-top:10px;text-align:left" onClick=${() => setAddOpen(v => !v)}>${addOpen ? "▾" : "▸"} ➕ Add / import parts</button>
       ${addOpen && html`<div style="margin-top:8px">
+        <${Label}>By part number</${Label}>
         <div class="row" style="gap:6px">
           <input style="flex:1" name="bt-want-part" autocomplete="off" autocapitalize="characters" placeholder="Part # to add" value=${wantPart} onInput=${e => setWantPart(e.target.value)} />
           <input style="width:52px;text-align:center" inputmode="numeric" value=${wantQty} onInput=${e => setWantQty(e.target.value)} />
           <button class="step plus" style="width:40px" disabled=${!wantPart.trim()}
             onClick=${() => { upsertMoc({ ...moc, wanted: [...wanted, { partNum: wantPart.trim(), colorName: "", qty: parseInt(wantQty) || 1 }] }); setWantPart(""); setWantQty("1"); }}>+</button>
         </div>
-        <button class="ghost" style="margin-top:8px" onClick=${() => setImportOpen(true)}>⬇ Import from XML / CSV…</button>
+        <div class="label" style="margin-top:12px">Search by name (Rebrickable)</div>
+        <div class="row" style="gap:6px">
+          <input style="flex:1" placeholder="e.g. plate 1x2, minifig head" value=${searchQ}
+            onInput=${e => setSearchQ(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") searchParts(); }} />
+          <button class="step plus" style="width:auto;padding:0 12px;font-size:13px" disabled=${searchBusy || !searchQ.trim()} onClick=${searchParts}>${searchBusy ? "…" : "Search"}</button>
+        </div>
+        ${searchMsg && html`<div class="dim" style="font-size:12px;margin-top:6px">${searchMsg}</div>`}
+        ${searchRes && searchRes.length > 0 && html`<div style="margin-top:8px;max-height:300px;overflow:auto">
+          ${searchRes.map(p => html`<div key=${p.part_num} class="row" style="gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 8px;margin-bottom:5px">
+            <${Thumb} src=${p.part_img_url} size=${34} />
+            <div style="flex:1;min-width:0">
+              <div class="clamp2" style="font-size:13px;font-weight:600;line-height:1.2">${p.name}</div>
+              <div class="dim mono" style="font-size:11px">${p.part_num}</div>
+            </div>
+            <button class="step plus" style="width:40px" onClick=${() => addSearchResult(p)}>+</button>
+          </div>`)}
+        </div>`}
+        <button class="ghost" style="margin-top:10px" onClick=${() => setImportOpen(true)}>⬇ Import from XML / CSV…</button>
       </div>`}
-
-      ${wanted.length > 0 && html`<button class="ghost" style="margin-top:8px;color:var(--red);border-color:var(--red)"
-        onClick=${() => { if (confirm("Clear the entire parts list?")) { setSel(new Set()); upsertMoc({ ...moc, wanted: [] }); } }}>Clear parts list</button>`}
     </${Acc}>
 
     <div class="card">
@@ -1857,6 +1971,8 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
 
     ${editing && html`<${MocSheet} initial=${moc} onClose=${() => setEditing(false)}
       onSave=${m => { upsertMoc(m); setEditing(false); }} />`}
+
+    ${viewPart && html`<${PartImgViewer} p=${viewPart} onClose=${() => setViewPart(null)} />`}
   </div>`;
 }
 
@@ -3138,6 +3254,15 @@ function MinifigSection({ rec, change, onView }) {
     catch (e) { setErr(e.message || String(e)); }
     setBusy(false);
   }
+  // re-pull from Rebrickable — applies fixes (e.g. 2× fig parts now double) to already-tracked sets; resets found counts
+  async function refetch() {
+    if (!getKey().trim()) { setErr("Add your Rebrickable key in Settings first."); return; }
+    if (!confirm("Re-fetch minifigs from Rebrickable? This resets the found counts for minifig parts.")) return;
+    setBusy(true); setErr("");
+    try { const m = await fetchSetMinifigs(rec.setNum); change(r => { r.minifigs = m; return r; }); }
+    catch (e) { setErr(e.message || String(e)); }
+    setBusy(false);
+  }
   const bumpFig = (figNum, pid, d) => change(r => {
     const f = (r.minifigs || []).find(x => x.figNum === figNum); if (!f) return r;
     const p = f.parts.find(x => x.id === pid);
@@ -3157,6 +3282,10 @@ function MinifigSection({ rec, change, onView }) {
       ${err && html`<div class="card" style="color:var(--red);font-size:13px;margin-top:8px">${err}</div>`}
     </div>`}
     ${fetched && figs.length === 0 && html`<div class="dim" style="font-size:13px">This set has no minifigs.</div>`}
+    ${fetched && figs.length > 0 && html`<div class="row" style="justify-content:flex-end;margin-bottom:8px">
+      <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" disabled=${busy} onClick=${refetch}>${busy ? "Fetching…" : "↻ Re-fetch"}</button>
+    </div>`}
+    ${fetched && err && html`<div class="card" style="color:var(--red);font-size:13px;margin-bottom:8px">${err}</div>`}
     ${fetched && figs.map(f => {
       const fs = minifigStats([f]);
       const fOpen = openFig.has(f.figNum);
