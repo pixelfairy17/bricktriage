@@ -89,8 +89,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.41.0";
+const APP_VERSION = "0.42.0";
 const CHANGELOG = [
+  ["0.42.0", "2026-06-19", [
+    "MOC Parts List can now group by part type too — a Group: Colour ↔ Group: Type toggle on the action row, using the same ~12 emoji buckets as the set parts list (type read from the part name).",
+  ]],
   ["0.41.0", "2026-06-19", [
     "Set parts list: the Group chip now cycles Colour → Type → Exact. 'Group: Type' buckets parts into ~12 easily-told-apart groups (🧱 Bricks, ▭ Plates, ⬛ Tiles, ◣ Slopes & wedges, ⬤ Round/cones, 🪝 Brackets/clips/hinges, 🪜 Bars/rods, 🪟 Windows/doors/panels, ⚙️ Technic, 🛞 Wheels & tyres, 🌿 Plants/food/animals, 🧑 Minifig & gear, ✨ Other) — a heuristic on the part name, refinable from real use.",
   ]],
@@ -1590,6 +1593,8 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   const [openGroups, setOpenGroups] = useState(() => new Set());
   const [wantOpen, setWantOpen] = useState(() => new Set()); // collapsible parts-list colour groups
   const toggleWant = g => setWantOpen(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
+  const [partGroup, setPartGroupRaw] = useState(() => load("bt:mocpartgroup", "color")); // color | type
+  const setPartGroup = v => { setPartGroupRaw(v); save("bt:mocpartgroup", v); setWantOpen(new Set()); };
   const [partsOpen, setPartsOpen] = useState(true); // Parts List accordion block
   const [addOpen, setAddOpen] = useState(false);    // collapsible add/import sub-block (hidden until tapped)
   const [sel, setSel] = useState(() => new Set());  // parts ticked to push onto a want list (by wanted index)
@@ -1868,15 +1873,18 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
       ${wanted.length > 0 && html`<div class="row" style="gap:8px;margin-bottom:8px">
         <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${selectAllMissing}>Select all missing</button>
         ${sel.size > 0 && html`<button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${() => setSel(new Set())}>Clear selection</button>`}
+        <button class="chip" style="padding:7px 10px;font-size:12px;width:auto;border-color:var(--blue);color:var(--blue)"
+          onClick=${() => setPartGroup(partGroup === "type" ? "color" : "type")}>${partGroup === "type" ? "Group: Type" : "Group: Colour"}</button>
         <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto;margin-left:auto;color:var(--red);border-color:var(--red)"
           onClick=${() => { if (confirm("Clear the entire parts list?")) { setSel(new Set()); upsertMoc({ ...moc, wanted: [] }); } }}>Clear parts list</button>
       </div>`}
       ${(() => {
         if (!wanted.length) return null;
-        // group the parts list by colour bucket so it reads like a set's parts list
+        // group the parts list by colour bucket (or part type) so it reads like a set's parts list
         const map = new Map();
-        wanted.forEach((w, i) => { const g = colorGroup(w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push({ w, i }); });
-        const entries = [...map.entries()].sort((a, b) => groupRank(a[0]).localeCompare(groupRank(b[0])));
+        wanted.forEach((w, i) => { const g = partGroup === "type" ? partType(w.name) : colorGroup(w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push({ w, i }); });
+        const rank = partGroup === "type" ? typeRank : groupRank;
+        const entries = [...map.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
         return entries.map(([g, items]) => {
           const gNeed = items.reduce((a, x) => a + (x.w.qty || 0), 0);
           const gHave = items.reduce((a, x) => a + Math.min(haveFor(x.w.partNum), x.w.qty || 0), 0);

@@ -8,6 +8,10 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.42.0 — 2026-06-19
+
+- **MOC Parts List — group by type.** Added a **Group: Colour ↔ Group: Type** toggle on the parts-list action row, using the same ~12 emoji buckets as the set parts list (🧱 Bricks, ▭ Plates, ⬛ Tiles, ◣ Slopes, ⬤ Round, ⚙️ Technic, …). Part type is read from the part name; the choice persists.
+
 ## v0.41.0 — 2026-06-19
 
 - **Set parts list — Group: Type.** The Group chip now cycles **Colour → Type → Exact**. *Group: Type* buckets parts into ~12 easily-distinguished groups with emoji labels — 🧱 Bricks, ▭ Plates, ⬛ Tiles, ◣ Slopes & wedges, ⬤ Round/cones, 🪝 Brackets/clips/hinges, 🪜 Bars/rods, 🪟 Windows/doors/panels, ⚙️ Technic, 🛞 Wheels & tyres, 🌿 Plants/food/animals, 🧑 Minifig & gear, ✨ Other. Heuristic match on the part name (refinable from real use, like the colour groups / part-rate maps).
