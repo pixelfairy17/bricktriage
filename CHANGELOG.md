@@ -8,6 +8,12 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.40.0 — 2026-06-19
+
+- **Set parts list — tick = have.** Ticking a part's checkbox now **auto-marks it have** (qty → max). Unticking only deselects (un-mark via the row tap or the batch **Mark as not have**).
+- **MOC Parts List — swipe-delete glitch fixed.** The red **Delete** panel now only renders while a row is actually being swiped, so it no longer bleeds through behind the qty/＋ controls at rest.
+- **MOC Parts List — donor/found sources.** The donor line is now **"Found X in donor • Y in sets"** — `X` = free pieces in **♻️ donor** sets, `Y` = free pieces in other tracked sets **not marked built**. Each count is a **link** that lists the sets holding the part, each with a **purple →** to pull it straight into the MOC.
+
 ## v0.39.0 — 2026-06-19
 
 - **Set parts list — checkbox always on.** Every part row now shows the select checkbox at all times (the **☑ Select** mode toggle is gone). Tick any part and the sticky batch bar appears with **Mark as have** (75%) and **→ MOC** (25%) **side by side on one line** (was two stacked full-width buttons). **All shown / None** kept.
