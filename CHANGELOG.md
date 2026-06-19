@@ -8,6 +8,18 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.44.0 — 2026-06-19
+
+- **MOC Parts List — Edit in the swipe menu.** Swiping a parts-list row left now reveals **Edit** as well as **Delete**. Edit opens a sheet to change the part's **colour** — picked from the real colours that part comes in on Rebrickable, each shown as the part *rendered in that colour* — and its **quantity** (a typeable number field).
+- **MOC Parts List — colours now match.** Picking/editing a colour stores the **colour-correct Rebrickable image** (the generic part image is only the default colour, which is why thumbnails didn't match the listed colour). **🖼 Get part images** is colour-aware too — re-run it, or edit a line's colour, to correct existing rows.
+- **Part-type grouping fix.** Removed the catch-all **⬤ Round/cones/cylinders** bucket. *Plate, Round / Special* now group under **▭ Plates**, *Plant, Round* under **🌿 Plants**, *Brick, Round* under **🧱 Bricks** (the leading noun wins). Standalone cones/cylinders/domes/dishes fold into Bricks; cockpits into **🪟 Windows**. **Tiles / Plates / Bricks** also rank **above Slopes & wedges**, so *Tile, Curved / Macaroni* reads as a **⬛ Tile** (was landing in Slopes via "curved"); plain slopes/wedges/cheese still group as **◣ Slopes & wedges**.
+- **Set parts list — reverted tick-to-auto-mark.** The always-on select checkbox now just **selects** a part (it no longer auto-marks it have). Apply with the bottom **"Mark N as have / not have"** batch bar — as it worked the iteration before.
+- **WTB — add a part by scan / number / description.** The add-a-part flow now lets you **scan** a part, type a **part number**, or **search Rebrickable by description**, then pick the **colour** (with thumbnails) and **qty** before adding — replacing the blind type-it-in form.
+- **WTB — pictures + enlarge.** Part pictures are fetched from Rebrickable (**🖼 Get part images**); tap a thumbnail to **enlarge** it.
+- **WTB — clearer qty + quick edit.** Each row reads **"N needed / M got"**; the got-count is a **typeable number field** (plus − / +). The old ✕ delete moved into the **swipe-left menu** (Edit colour/qty/For + Delete).
+- **WTB — To Get / Got It sections.** A list now splits into collapsible **To Get** and **Got It** sections. Mark a part's got-count up to its needed qty (tap the name, type, or step) and it moves to **Got It**; knock it back down and it returns to **To Get**. **Clear Got It** in one tap.
+- **WTB — per-part "For" link.** A wanted part can optionally be tagged **For: 🧩 MOC / 🧱 Set** so you know which build it's destined for while shopping (shown as a chip on the row).
+
 ## v0.43.0 — 2026-06-19
 
 - **MOC Parts List — have/need now counts only what's recorded.** Donor / "in sets" availability no longer auto-counts toward have/need, and no longer greys/dims the row, until you actually **transfer** it in with **→**. The count is now just what you've transferred from sets + bought. Each row shows a small **♻️ N** under the qty = pieces transferred into this MOC, so a transfer is clearly indicated.
