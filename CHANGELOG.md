@@ -8,6 +8,19 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.39.0 — 2026-06-19
+
+- **Set parts list — checkbox always on.** Every part row now shows the select checkbox at all times (the **☑ Select** mode toggle is gone). Tick any part and the sticky batch bar appears with **Mark as have** (75%) and **→ MOC** (25%) **side by side on one line** (was two stacked full-width buttons). **All shown / None** kept.
+- **Unified checkbox look.** The **MOC Parts List** now uses the same round **✓** checkbox as the set parts list (was a ☐/☑ glyph).
+
+## v0.38.0 — 2026-06-19
+
+- **MOC Parts List rows now read like a set's parts list.** The **have/need** count sits in the middle between the **− / +** steppers (which edit the *needed* qty). The have-count now also counts pieces sitting in sets you flag **♻️ Donor**, so it reflects what you can actually pull — surfaced on the row as **"N in donor sets"**.
+- **Swipe-to-delete.** Swipe a parts-list row left to reveal **Delete** (replaces the easy-to-mis-tap ✕). **Clear parts list** moved to a small right-aligned button on the *Select all missing* row (was a big full-width button).
+- **Part pictures in the MOC Parts List.** Thumbnails now also reuse images from any tracked set, are **tap-to-enlarge** (with a BrickLink lookup), and a **🖼 Get part images** button pulls real images + names from Rebrickable for imported / hand-added lines.
+- **Add parts by name.** Search Rebrickable by **part name** (not just number) when adding to a MOC — results show a thumbnail + name to add in one tap.
+- **Bug — duplicate minifigs.** A set with **2× of the same minifig** now doubles that fig's parts (qty needed). Re-fetch minifigs on an already-tracked set to apply (**↻ Re-fetch** in the Minifigs accordion). *(e.g. fig-006547 in 21159-1.)*
+
 ## v0.37.0 — 2026-06-18
 
 - **MOC detail redesign — Parts List accordion.** The old "Wanted parts (target build)" card is now a collapsible **Parts List** block: the full bill of materials for the build (you may or may not own each part — this is distinct from a *want* list, which is only what you still need to buy). Colour groups + thumbnails as before, with a `have/total · %` summary on the accordion header so it reads while collapsed.
