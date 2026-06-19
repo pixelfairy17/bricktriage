@@ -8,6 +8,10 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.41.0 — 2026-06-19
+
+- **Set parts list — Group: Type.** The Group chip now cycles **Colour → Type → Exact**. *Group: Type* buckets parts into ~12 easily-distinguished groups with emoji labels — 🧱 Bricks, ▭ Plates, ⬛ Tiles, ◣ Slopes & wedges, ⬤ Round/cones, 🪝 Brackets/clips/hinges, 🪜 Bars/rods, 🪟 Windows/doors/panels, ⚙️ Technic, 🛞 Wheels & tyres, 🌿 Plants/food/animals, 🧑 Minifig & gear, ✨ Other. Heuristic match on the part name (refinable from real use, like the colour groups / part-rate maps).
+
 ## v0.40.0 — 2026-06-19
 
 - **Set parts list — tick = have.** Ticking a part's checkbox now **auto-marks it have** (qty → max). Unticking only deselects (un-mark via the row tap or the batch **Mark as not have**).

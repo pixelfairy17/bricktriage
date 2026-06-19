@@ -89,8 +89,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.40.0";
+const APP_VERSION = "0.41.0";
 const CHANGELOG = [
+  ["0.41.0", "2026-06-19", [
+    "Set parts list: the Group chip now cycles Colour → Type → Exact. 'Group: Type' buckets parts into ~12 easily-told-apart groups (🧱 Bricks, ▭ Plates, ⬛ Tiles, ◣ Slopes & wedges, ⬤ Round/cones, 🪝 Brackets/clips/hinges, 🪜 Bars/rods, 🪟 Windows/doors/panels, ⚙️ Technic, 🛞 Wheels & tyres, 🌿 Plants/food/animals, 🧑 Minifig & gear, ✨ Other) — a heuristic on the part name, refinable from real use.",
+  ]],
   ["0.40.0", "2026-06-19", [
     "Set parts list: ticking a part's checkbox now auto-marks it have (qty → max); unticking just deselects (un-mark via the row tap or the batch button).",
     "MOC Parts List: fixed the swipe-to-delete visual glitch — the red Delete only renders while you're actually swiping a row.",
@@ -436,6 +439,33 @@ function colorGroup(name) {
 // colour groups list alphabetically (e was confused by the old fixed Transparent→Pink order);
 // "Other" is always pinned last.
 const groupRank = g => g === "Other" ? "￿" : g;
+
+// part-TYPE buckets — collapse Rebrickable's ~60 categories into a handful of easily-told-apart
+// groups (emoji + label). Matching order is specific→generic (first keyword hit wins); refine from
+// real use like PART_RATES / COLOR_GROUPS. Names are matched against the part NAME, lower-cased.
+const PART_TYPES = [
+  ["🧑 Minifig & gear", ["minifig", "torso", "headgear", "hair", "hat ", "helmet", " cap", "hood", "mask", "sword", "weapon", "shield", "knife", "spear", "pistol", "rifle", "blaster", "backpack", "goblet", "crown", "epaulette"]],
+  ["⚙️ Technic", ["technic", "axle", "liftarm", "beam", " gear", "pneumatic", "shock", "steering", "worm", "differential", "cam ", "bush"]],
+  ["🛞 Wheels & tyres", ["wheel", "tyre", "tire", "tread", " rim", "mudguard", "hubcap"]],
+  ["🪟 Windows, doors & panels", ["window", "door", "windscreen", "windshield", "glass", "panel", " wall", "fence", "gate", "shutter"]],
+  ["🪝 Brackets, clips & hinges", ["bracket", "clip", "hinge", "finger", "latch", "magnet", "ball joint", "tow ball", "towball"]],
+  ["🪜 Bars, rods & ladders", ["bar ", " bar", "rod", "antenna", "lever", "handle", "ladder", "hose", "string", "chain", "whip"]],
+  ["◣ Slopes & wedges", ["slope", "wedge", "roof", "cheese", "arch", "curved"]],
+  ["⬤ Round, cones & cylinders", ["round", "cone", "dish", "dome", "cylinder", "ring", "barrel", "cockpit", " ball"]],
+  ["⬛ Tiles", ["tile"]],
+  ["▭ Plates", ["plate"]],
+  ["🧱 Bricks", ["brick"]],
+  ["🌿 Plants, food & animals", ["plant", "flower", "leaf", "tree", "grass", "food", "fruit", "animal", "fish", "wing", "egg", "bone"]],
+];
+const PART_TYPE_DISPLAY = ["🧱 Bricks", "▭ Plates", "⬛ Tiles", "◣ Slopes & wedges", "⬤ Round, cones & cylinders",
+  "🪝 Brackets, clips & hinges", "🪜 Bars, rods & ladders", "🪟 Windows, doors & panels", "⚙️ Technic",
+  "🛞 Wheels & tyres", "🌿 Plants, food & animals", "🧑 Minifig & gear", "✨ Other"];
+function partType(name) {
+  const n = ` ${(name || "").toLowerCase()} `;
+  for (const [g, keys] of PART_TYPES) if (keys.some(k => n.includes(k))) return g;
+  return "✨ Other";
+}
+const typeRank = g => { const i = PART_TYPE_DISPLAY.indexOf(g); return String(i < 0 ? 98 : i).padStart(2, "0"); };
 
 // part value heuristic — avg price guide. Ordered high→low; first hit wins (name OR colour).
 // Keyword map is a first-guess like COLOR_GROUPS — refine from real use.
@@ -2847,13 +2877,18 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       // #3: hiding spares still surfaces spares you've actually logged (qtyFound > 0) so they don't vanish
       !isExcludedPart(p) && (showSpares || !p.isSpare || p.qtyFound > 0) && (!hideFound || p.qtyFound < p.qtyNeeded) &&
       (!ql || p.partName?.toLowerCase().includes(ql) || p.partNumber?.toLowerCase().includes(ql) || p.colorName?.toLowerCase().includes(ql)));
-    const keyOf = p => groupMode === "group" ? colorGroup(p.colorName) : (p.colorName || "Unknown");
+    const keyOf = p => groupMode === "group" ? colorGroup(p.colorName)
+      : groupMode === "type" ? partType(p.partName)
+      : (p.colorName || "Unknown");
     const map = new Map();
     for (const p of list) { const k = keyOf(p); if (!map.has(k)) map.set(k, []); map.get(k).push(p); }
     const entries = [...map.entries()];
     if (groupMode === "group") {
       entries.sort((a, b) => groupRank(a[0]).localeCompare(groupRank(b[0])));
       for (const [, l] of entries) l.sort((a, b) => `${a.colorName}|${a.partName}`.localeCompare(`${b.colorName}|${b.partName}`));
+    } else if (groupMode === "type") {
+      entries.sort((a, b) => typeRank(a[0]).localeCompare(typeRank(b[0])));
+      for (const [, l] of entries) l.sort((a, b) => `${a.partName}|${a.colorName}`.localeCompare(`${b.partName}|${b.colorName}`));
     } else {
       entries.sort((a, b) => a[0].localeCompare(b[0]));
     }
@@ -3114,8 +3149,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
           onClick=${() => setLogMode(logMode === "remaining" ? "find" : "remaining")} />
         <${Chip} label=${logMode === "remaining" ? "Hide full" : "Hide found"} color="var(--green)" active=${hideFound} onClick=${() => setHideFound(v => !v)} />
         <${Chip} label="Spares" color="var(--dim)" active=${showSpares} onClick=${() => setShowSpares(v => !v)} />
-        <${Chip} label=${groupMode === "group" ? "Group: Colour" : "Group: Exact"} color="var(--blue)" active
-          onClick=${() => setGroupMode(groupMode === "group" ? "exact" : "group")} />
+        <${Chip} label=${groupMode === "group" ? "Group: Colour" : groupMode === "type" ? "Group: Type" : "Group: Exact"} color="var(--blue)" active
+          onClick=${() => setGroupMode(groupMode === "group" ? "type" : groupMode === "type" ? "exact" : "group")} />
         <${Chip} label=${openColors.size >= groups.length + 1 && groups.length > 0 ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false}
           onClick=${() => setOpenColors(openColors.size >= groups.length + 1 ? new Set() : new Set(["__acc", ...groups.map(g => g[0])]))} />
         <${Chip} label="↺ Reset" color="var(--red)" active=${false} onClick=${() => setConfirmReset(v => !v)} />
