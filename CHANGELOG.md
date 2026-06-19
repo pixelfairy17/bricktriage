@@ -8,6 +8,10 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.43.0 — 2026-06-19
+
+- **MOC Parts List — have/need now counts only what's recorded.** Donor / "in sets" availability no longer auto-counts toward have/need, and no longer greys/dims the row, until you actually **transfer** it in with **→**. The count is now just what you've transferred from sets + bought. Each row shows a small **♻️ N** under the qty = pieces transferred into this MOC, so a transfer is clearly indicated.
+
 ## v0.42.0 — 2026-06-19
 
 - **MOC Parts List — group by type.** Added a **Group: Colour ↔ Group: Type** toggle on the parts-list action row, using the same ~12 emoji buckets as the set parts list (🧱 Bricks, ▭ Plates, ⬛ Tiles, ◣ Slopes, ⬤ Round, ⚙️ Technic, …). Part type is read from the part name; the choice persists.
