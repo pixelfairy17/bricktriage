@@ -3,8 +3,9 @@
 All changes to the single-file HTML prototype (deployed as `index.html`).
 Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no build step, IndexedDB persistence (v0.10+; localStorage before that).
 
-> Note: this file currently jumps from v0.28.1 to v0.14.0 — v0.15.0–v0.28.0 live in the in-file
-> `CHANGELOG` array and `BrickTriage-Handoff-v0.28.0_1.md`. Back-fill here on request.
+> Note: v0.15.0–v0.28.0 were back-filled here (2026-06-20) from the in-file `CHANGELOG` array; they
+> are condensed from the per-release notes. The full original wording also lives in that in-file array
+> and `BrickTriage-Handoff-v0.28.0_1.md`.
 
 -----
 
@@ -193,6 +194,121 @@ UI-bug sweep + backlog from the sorting session.
 
 - **Backup now includes the Rebrickable API key** — restoring a backup also restores the key, so it no longer has to be re-entered after re-adding the app to the Home Screen. Backup format `v: 6`; import is backward-compatible with `v: 5`. Keep backup files private (the deployed app never contains the key).
 - **Deploy cleanup** — removed the local-path "saved from url" artifact from the file head for GitHub Pages.
+
+-----
+
+## v0.28.0 — 2026-06-13
+
+- **NF2 — MOC parts import.** Every MOC now has a *Wanted parts (target build)* list. Import the build from BrickLink Studio (XML) or Rebrickable (CSV/TSV) by paste, or add part numbers by hand. A have/need counter + % matches your real allocated parts against the target (by part number). Add-by-scan and BrickLink colour-name mapping still to come — colours import as-is for now.
+
+## v0.27.0 — 2026-06-13
+
+- **NF1 — Loose / PAB buys.** New buy kind with fill-a-box presets (Small $17.95 / Large $32.99 one-tap the price), its own Loose tab and spend line in Buys.
+- **NF4 — Want-to-buy list.** New WTB tab (Sets → WTB). Flag parts to grab at the PAB wall or a second-hand store with qty / colour / note, check them off as you find them, and clear checked-off in one tap.
+
+## v0.26.0 — 2026-06-13
+
+- **#2 Sets — Condition filter** (✨ New / ♻️ Used) + an Incomplete-only toggle in the filter bar; stack with Triage and Theme, ✕ Clear resets everything.
+- **#11 New-set cards declutter.** % and triage hidden by default on new sets (Settings → "Set cards (new sets)" switches each back on). Cards show "♻️ N → MOC · M in set" when pieces are out to MOCs.
+- **#12 New view.** ✨ By condition (New purchases vs Bulk/used) accordion, added to the view chip cycle.
+- **#14 Add merch from a buy's detail** screen, pre-linked to that buy (bulk + regular).
+- **#17 Merch** gains quantity + current market rate (each); detail shows qty, market rate, market total.
+- **#18 Buy assessment** now folds in merch market value ("Merch — market now") alongside paid + RRP.
+- **#1 Add-set autosaves a draft** (set number, linked buys, fetched inventory) — tab away and back without losing your place; clears on save or cancel.
+
+## v0.25.0 — 2026-06-13
+
+- **Built auto-marks parts.** The Built button now auto-marks every main part (spares + separators excluded) as have when you flip a set to Built — fills only the unticked ones.
+- **#9 Set cards.** Dropped the 🛍️ NEW tag; condition is now a corner emoji on the set image — ✨ new · ♻️ used · 📤 part-out (part-out wins).
+- **#3 Instructions.** Set how many books a set HAS (1–N), then tick the ones you own — records "has 2 books, I have neither / book 1 / both", each with its own condition. Summary reads have/total.
+- **#15 Buys cards.** Merch count shown next to the set count; date moved to its own line.
+
+## v0.24.0 — 2026-06-13
+
+- **Per-set logging mode** (🔍 Find / ↩ Remaining) in the parts bar. *Find* = tick parts up as you find them. *Remaining* = the set is marked full, then you tick off what you pull for a build — the rest is inferred parted out, canonical count kept.
+- **Remaining mode header** — segmented donut (green intact → yellow left → purple parted → red missing) + an "X/Y pcs in set · N left · N parted" counter that reads "✓ Full" when nothing's been pulled.
+- **Remaining mode** — a "pieces missing from this set" stepper drives the red missing segment for incomplete donors. Switching in marks all parts present (with confirm); switching back keeps your counts.
+- **MOC → Add parts** — ✓ Take all free (grab every available piece from the source set in one tap) and Clear taken (return everything pulled from that set).
+- Renamed the set-detail **Accessories** group to **Instructions & Box** — it's not parts.
+
+## v0.23.0 — 2026-06-13
+
+- **Parts list — spare tag.** Spare parts now carry a blue SPARE tag on the colour/number line (was a faint "(spare)") — the rows that looked like duplicates are the spares. Still hidden behind the Spares chip by default.
+- **Brick separators removed entirely** — they're tools, not set parts: gone from the parts list, completion %, and the value heuristic (matches 96874 / 630 / 6007 and anything named "separator").
+- **Settings → Completion %** — new toggle to count spares toward % (off by default); flipping it instantly recomputes every set. Separators always excluded.
+- Existing sets **reindex once on load** so the separator/spare changes apply to sets already tracked.
+
+## v0.22.0 — 2026-06-13
+
+- **FREEZE FIX (the MOC one).** MocDetail's add / return / main segments are now keyed — the last unkeyed segment swap (same Preact positional-diffing landmine as v0.20/v0.21). Pressing Done after adding parts left a stale invisible layer that ate every tap except the PDF link; reload was the only escape. Fixed at the root.
+- **Modal sheets track the iOS keyboard** (visualViewport): the sheet stays pinned above the keyboard and the focused field scrolls into view — fixes fields scrolling out of reach when the number pad opens mid-add.
+- **New MOC / New buy text fields** no longer trigger iOS "AutoFill Contact" / saved addresses (autocomplete/autocorrect off, non-contact field names).
+- **Tab behaviour** — tapping the current tab scrolls it to top; tapping any tab returns to that tab's top-level list (exits an open set / buy / MOC / merch detail).
+
+## v0.21.1 — 2026-06-12
+
+- **FREEZE FIX.** Toggling Compact | Detailed corrupted the DOM and froze the app (same positional-diffing landmine as v0.20): set cards now carry per-density keys (full remount on toggle), the three view blocks (flat / by-buy / by-theme) got keyed wrappers, and every filter chip is keyed.
+- **Set detail** — switching Used → New auto-collapses all accordions (values pre-filled); New → Used auto-expands them and offers to clear the auto-filled data.
+- **Parts list** — Book & Box renamed to 📖 Accessories and is now collapsible like the colour groups (included in ⌄ All).
+
+## v0.21.0 — 2026-06-12
+
+- **Sets gain Condition** (🛍️ New / 🔄 Used) — auto-defaulted from the linked buy's kind (bulk → Used, receipt → New), editable in the header; switching to New offers a one-tap autofill (all parts + spares have, instructions → Book ×1 Excellent, box → Yes Excellent, triage → Keep).
+- **Sets gain Built ✓**, price paid + RRP (shown when New), and a Box section (None | Yes + condition + note); status line reads parts-in-MOC → Built ✓ → complete → x/y found, in that priority.
+- **Instructions relabelled** — Paper → Book, Digital → Reprint; 📖 Instructions ↗ deep link (LEGO.com) added under the set name.
+- **Receipts** no longer ask for price/RRP — totals derived from linked sets' paid/RRP plus merch; buy detail $ overview includes a merch paid/RRP line.
+- **Set detail reworked into accordions** (est. value, triage, instructions, box, buys & notes) — collapsed by default when New, plus a ⌄/⌃ all toggle; parts list gains a 📖 Book & Box group on top, expand/collapse-all, and a ☑ select mode.
+- **Set photos** — gallery of catalog image + BrickLink box image — tap to enlarge, swipe to loop, ★ pick which shows on cards (BrickLink box image is an empirical hotlink; quietly hidden on 404).
+- **Add set reordered** — mode segment → Link to buy (single collapsed row) → set number + scan + fetch.
+- **Sets overview** — 🛍️ NEW tag; New sets show paid · RRP; Triage + Theme as multi-select checkboxes (Keep unticked by default); By-buy view groups by CHANNEL with a Bulk | Regular | All segment.
+- **Sets overview — Compact | Detailed toggle.** Compact rows show thumb, number, name, %, triage, NEW/📖/📦 badges, with a right-edge chevron zone expanding details in place; Expand all / Collapse all chip.
+
+## v0.20.0 — 2026-06-12
+
+- **FREEZE FIX.** All Sets-tab segment views (Sets/Merch/MOCs) + every top-level tab view now carry explicit keys — unkeyed sibling swaps let Preact's positional diffing corrupt the DOM, leaving a stale invisible overlay that swallowed every tap after editing merch.
+- **Photo viewer** — tall images (full-page screenshots) capped at 70% of viewport height so ✕, ★ and Delete stay reachable.
+- **Merch gets a read-only detail page** (buy-detail pattern): condition, price, RRP + saved %, source buys, notes, photo gallery with tap-to-enlarge, ★ display-pic, multi-photo add. Merch now supports MULTIPLE photos.
+- **Add set** — Quick/Bulk chips replaced by a Normal | ⚡ Quick | ↻ Bulk segmented control with a per-mode hint; fetch button label follows the mode.
+- **Buy detail** — + Add set to this buy opens Add set with that buy pre-linked; saving/cancelling returns to the buy detail; Bulk mode stays for the next set.
+- **All Buys** — adding a buy opens its detail page straight away.
+- iOS standalone bottom gap — parked for native (noted in SPEC for SwiftUI verification).
+
+## v0.19.0 — 2026-06-12
+
+- **Regular buys are now receipts.** The Regular segment groups by channel (collapsible headers with receipt count + total spend); each receipt shows date, price, RRP · −% markdown, and linked-set thumbnails.
+- **New-receipt form** drops the label (auto-named "Kmart — 12 Jun 2026", editable later) and gains an RRP field; buy detail shows RRP + saved %.
+- **Add set** — ⚡ same-day receipt suggestion chips above the buy picker; ＋ New receipt creates one inline (kind preset to Regular).
+- Bulk segment unchanged (labels, channel filter, manual drag, mass-select).
+
+## v0.18.0 — 2026-06-12
+
+- **Buy photos** — pick MULTIPLE photos in one go; first photo = card display pic (yellow border in the gallery); expanded view gets ✕ plus ★ Set as display pic and Delete.
+- **Standalone bottom gap — final web attempt.** App height measured at runtime from window.innerHeight (CSS viewport units can be stale in standalone) and re-measured on resize/rotation; area below the app paints tab-bar colour. If a gap persists it's a WebKit standalone bug → parked for native.
+- **Buys** — kind dropdown replaced by a Bulk | Regular | No Buy segment under the spend card + Add buy; channel + sort chips per segment; manual drag-reorder within a segment.
+
+## v0.17.0 — 2026-06-12
+
+- **MOCs — third segment on the Sets tab** (Sets | Merch | MOCs). A MOC has name, photo, notes, status (Building/Built/Disassembled) and a list of REAL parts allocated from tracked sets — grouped by source set so rebuild/teardown knows where every genuine piece goes home.
+- **Transfers both ways** — + Add parts inside a MOC (pick source set → take with steppers, capped at unallocated found parts) and a → button on every set part row (pick MOC + qty, inline new-MOC create).
+- **Completion untouched by transfers** — the ring stays; set cards show a ♻️ n badge, set detail shows ♻️ pcs-in-MOCs, part rows show "♻️ n → MOC name".
+- **⇠ Return parts** — tick pieces back per source set as you re-bag them; when everything's home the MOC auto-flips to Disassembled.
+- **PDF instructions** attachable per MOC (stored on-device; tap to save/open via iOS sheet). NOT in JSON backups — keep originals in Files.
+- **Backup v5** includes MOCs (allocations + photos; PDFs excluded).
+
+## v0.16.0 — 2026-06-12
+
+- **Themes** — every fetched set stores its root theme (Friends, City, …) — purple badge on cards; Triage ▾ + Theme ▾ dropdowns (only themes you own, with counts); view chip cycles ≡ → ⊟ By buy → ⊞ By theme; ✕ Clear when filters active; one-tap banner backfills themes for tracked sets.
+- **Instructions** — Paper now expands per-booklet rows (book #, condition, note); duplicates = two rows; set cards show 📖×n.
+- **Merch** — Sets tab gains a Sets | Merch segment: track LEGO-branded boxes/storage/etc with photo, release year, RRP-then, condition, price paid, linked buy(s), notes.
+- **Backup v4** includes merch.
+
+## v0.15.0 — 2026-06-12
+
+- **Tab-bar gap bug killed at the root.** `position:fixed` abandoned entirely (standalone iOS resolves fixed elements against a stale viewport). App is now a 100dvh flex column — scrollable content above, tab bar as a normal in-flow element below. Delete + re-add the Home-Screen icon after this deploy.
+- **Add set** — entering an already-tracked number offers Open set / Dismiss instead of an error.
+- **Sorting** — when no tracked set needs a part, 🔎 Find LEGO sets containing it (Rebrickable part lookup → pick colour → set list); tapping a set tracks it (linked to last bulk buy) and logs +1, or logs straight into an already-tracked set.
+- **Buys** — photo gallery per buy (camera/library, downscaled ≤1024px, on-device); card thumbnails (bulk → first photo or 📦, regular → linked set image, stacked with a count badge).
+- **Backup v3** includes buy photos.
 
 -----
 
