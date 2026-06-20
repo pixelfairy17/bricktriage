@@ -8,6 +8,13 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.47.0 — 2026-06-20
+
+- **Instructions — Leaflet.** Added a **Leaflet** option alongside *None / Book / Reprint* for single-sheet instructions.
+- **Building status (set).** A set can be marked **🔨 Building** — this is a **status/filter only**: unlike **Built** it does **not** mark any parts as found. It shows on the set card and gets its own **🔨 Building** filter chip in the Sets list.
+- **Recategorise a part's type.** A new **Part category** selector — in a part's **enlarged image** and in the **swipe-left Edit** sheet on MOC / WTB parts — overrides the auto *Group: Type* bucket for that part **everywhere it appears**. Fix a mis-grouped part yourself instead of reporting it. (Overrides are included in backups.)
+- **Sets → by-buy: narrow to one buy.** The by-buy view gains a **buy picker** that filters the list to a **single specific buy** (by name), so you can see exactly which sets came from that purchase — not just grouped by channel.
+
 ## v0.46.0 — 2026-06-20
 
 - **Tags (new, cross-app).** Create your own **coloured tags** and attach them to **sets, MOCs, want-list parts, and any individual part**. A part's tags follow it **everywhere it appears** (set inventory, MOC parts list, want lists). Manage tags in **Settings → Tags**: rename (✎), recolour (🎨), or delete (✕ — deleting strips the tag from everything using it). Tag a set or MOC from its **🏷 Add/Edit tags** button; tag a part from its **enlarged image**. The Sets list gains a **🏷 Tags filter** (shows sets matching **all** ticked tags), and tags appear on **set & MOC cards**. Tags are included in **backups** (export format v8).
