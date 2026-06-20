@@ -8,6 +8,13 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.46.0 — 2026-06-20
+
+- **Tags (new, cross-app).** Create your own **coloured tags** and attach them to **sets, MOCs, want-list parts, and any individual part**. A part's tags follow it **everywhere it appears** (set inventory, MOC parts list, want lists). Manage tags in **Settings → Tags**: rename (✎), recolour (🎨), or delete (✕ — deleting strips the tag from everything using it). Tag a set or MOC from its **🏷 Add/Edit tags** button; tag a part from its **enlarged image**. The Sets list gains a **🏷 Tags filter** (shows sets matching **all** ticked tags), and tags appear on **set & MOC cards**. Tags are included in **backups** (export format v8).
+- **Add set — scan a part now finds the SET.** When a box/instructions scan comes back as a **part** rather than a set, tap **🔎 Find the set**: the app looks up (by colour where needed) which **sets contain that part** on Rebrickable and lists them — tap one to **fetch + add** it. Replaces the old dead-end that only linked out to BrickLink. (The BrickLink lookup is still there as a fallback.)
+- **MOC Parts List — import a set's exact parts.** Under **➕ Add / import parts**, enter a **set number** to pull that set's full Rebrickable inventory (main **+** minifig parts; spares / separators / sticker sheets excluded) straight into the parts list — for building a set from your own bulk instead of buying it boxed.
+- **Part-type grouping fix.** A part whose **name starts with** *Plant / Tile / Plate / Brick* is now classified by that **leading noun first**. Fixes **10884** *"Plant, Leaves 6 x 5 Swordleaf with Clip"* landing in **🧑 Minifig & gear** (its name contains "**sword**") — it now correctly reads as **🌿 Plants**.
+
 ## v0.45.0 — 2026-06-19
 
 - **Part-type grouping fixes.** *Plant…* parts now always group under **🌿 Plants** — even *Plant, Plate Round 1x1 with 3 Leaves* (was landing in **▭ Plates** because of the "plate" in its name). Minifig **Equipment / Utensil** parts (e.g. *Equipment, Dish*) now group under **🧑 Minifig & gear** instead of **🧱 Bricks**.
