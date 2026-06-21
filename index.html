@@ -89,8 +89,20 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.45.0";
+const APP_VERSION = "0.47.0";
 const CHANGELOG = [
+  ["0.47.0", "2026-06-20", [
+    "Instructions: added a 'Leaflet' option alongside None / Book / Reprint (for single-sheet instructions).",
+    "Sets can be marked 🔨 Building — a status/filter only: unlike Built it does NOT mark any parts as found. Shows on the set card and gets its own 🔨 Building filter chip in the Sets list.",
+    "Recategorise a part's type yourself: the 'Part category' selector (in a part's enlarged image, and in the swipe-left Edit sheet on MOC/WTB parts) overrides the auto 'Group: Type' bucket for that part everywhere it appears — so you can fix mis-grouped parts directly instead of reporting them.",
+    "Sets → by-buy view: a buy picker now narrows the list to ONE specific buy (by name), so you can see exactly which sets came from that purchase, instead of only grouping by channel.",
+  ]],
+  ["0.46.0", "2026-06-20", [
+    "Tags (new, cross-app): create coloured tags and attach them to sets, MOCs, want-list parts and any individual part (a part's tags follow it everywhere it appears). Settings → Tags manages them — rename, recolour (🎨), or delete (deleting strips the tag from everything). Tag a set/MOC from its 🏷 button; tag a part from its enlarged image. Sets list gains a 🏷 Tags filter (matches ALL ticked tags); tags show on set & MOC cards. Tags are included in backups.",
+    "Add set — scan a part now finds the SET: when a box/instructions scan comes back as a part instead of a set, tap 🔎 Find the set to look up (by colour if needed) which sets contain that part on Rebrickable, then tap one to fetch + add it — instead of dead-ending at a BrickLink link.",
+    "MOC Parts List — Import a set's exact parts: in ➕ Add / import parts, enter a set number to pull that set's full Rebrickable inventory (main + minifig parts, spares/separators excluded) straight into the parts list. For building a set from your own bulk rather than buying it boxed.",
+    "Part-type grouping fix: a part whose NAME starts with Plant / Tile / Plate / Brick is now classified by that leading noun first. Fixes 10884 'Plant, Leaves 6 x 5 Swordleaf with Clip' landing in 🧑 Minifig & gear (its name contains 'sword') — it's now correctly 🌿 Plants.",
+  ]],
   ["0.45.0", "2026-06-19", [
     "Part-type grouping: 'Plant…' parts now always group under 🌿 Plants — even 'Plant, Plate Round 1x1 with Leaves' (was landing in ▭ Plates). Minifig 'Equipment'/'Utensil' parts (e.g. Equipment Dish) now group under 🧑 Minifig & gear instead of 🧱 Bricks.",
   ]],
@@ -405,7 +417,7 @@ const TRIAGE = [
   { id: "sell", label: "Sell", color: "var(--yellow)" },
   { id: "partOut", label: "Part-out", color: "var(--purple)" },
 ];
-const INSTR = [{ id: "none", label: "None" }, { id: "paper", label: "Book" }, { id: "digital", label: "Reprint" }];
+const INSTR = [{ id: "none", label: "None" }, { id: "paper", label: "Book" }, { id: "leaflet", label: "Leaflet" }, { id: "digital", label: "Reprint" }];
 const CONDITIONS = [["poor", "Poor"], ["good", "Good"], ["excellent", "Excellent"]];
 // set condition: how it was acquired. Default derives from linked buys (bulk → used, receipt → new).
 const condOfSet = e => e.condition || "used";
@@ -489,8 +501,21 @@ const PART_TYPES = [
 const PART_TYPE_DISPLAY = ["🧱 Bricks", "▭ Plates", "⬛ Tiles", "◣ Slopes & wedges",
   "🪝 Brackets, clips & hinges", "🪜 Bars, rods & ladders", "🪟 Windows, doors & panels", "⚙️ Technic",
   "🛞 Wheels & tyres", "🌿 Plants, food & animals", "🧑 Minifig & gear", "✨ Other"];
-function partType(name) {
-  const n = ` ${(name || "").toLowerCase()} `;
+// Leading-NOUN wins before the keyword soup — Rebrickable names these categories noun-first, so the
+// first word is the most reliable signal. This fixes false hits where a keyword appears mid-name:
+// e.g. 10884 "Plant, Leaves 6 x 5 Swordleaf with Clip" was landing in 🧑 Minifig & gear because
+// "Swordleaf" contains "sword". A name STARTING with Plant/Tile/Plate/Brick is that thing.
+const LEADING_NOUN = [
+  [/^plant\b/, "🌿 Plants, food & animals"],
+  [/^tile\b/, "⬛ Tiles"],
+  [/^plate\b/, "▭ Plates"],
+  [/^brick\b/, "🧱 Bricks"],
+];
+function partType(name, partNum) {
+  if (partNum) { const ov = partTypeOverride(partNum); if (ov) return ov; }
+  const raw = (name || "").toLowerCase().trim();
+  for (const [re, g] of LEADING_NOUN) if (re.test(raw)) return g;
+  const n = ` ${raw} `;
   for (const [g, keys] of PART_TYPES) if (keys.some(k => n.includes(k))) return g;
   return "✨ Other";
 }
@@ -532,6 +557,31 @@ const save = (k, v) => {
 const del = k => { cache.delete(k); idbDelete(k, idbStore).catch(() => {}); };
 const getKey = () => cache.get("rb_api_key") || "";
 const setKey = v => { cache.set("rb_api_key", v); idbSet("rb_api_key", v, idbStore).catch(() => {}); };
+
+// ---------- tags (cross-app: sets, MOCs, parts, WTB parts/lists) ----------
+// Registry lives at bt:tags = [{id,name,color}]; entities store an array of tag IDs in `.tags`.
+// Individual parts are tagged globally (any appearance of the part) via bt:partTags = {partKey:[id]}.
+const TAG_COLORS = ["#F5C518", "#5FBF6E", "#E05A4E", "#4E9BE0", "#A98BD6", "#E08F4E", "#4EC9C9", "#D64E9B", "#9BB04E", "#9B948A"];
+const newTagId = () => "tag" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+const loadTags = () => load("bt:tags", []);
+const tagById = (tags, id) => (tags || []).find(t => t.id === id) || null;
+// resolve an entity's tag-id list to live {id,name,color} records (dropping deleted ids)
+const resolveTags = (tags, ids) => (ids || []).map(id => tagById(tags, id)).filter(Boolean);
+const loadPartTags = () => load("bt:partTags", {});
+const partTagIds = pn => loadPartTags()[partKey(pn)] || [];
+const setPartTagIds = (pn, ids) => {
+  const m = { ...loadPartTags() };
+  if (ids && ids.length) m[partKey(pn)] = ids; else delete m[partKey(pn)];
+  save("bt:partTags", m);
+};
+// per-part PART-TYPE override (manual recategorisation), global by partKey → group label.
+const loadPartTypes = () => load("bt:partTypeOverrides", {});
+const partTypeOverride = pn => loadPartTypes()[partKey(pn)] || null;
+const setPartTypeOverride = (pn, group) => {
+  const m = { ...loadPartTypes() };
+  if (group) m[partKey(pn)] = group; else delete m[partKey(pn)];
+  save("bt:partTypeOverrides", m);
+};
 
 // One-time migration from localStorage (pre-v0.10 data), then hydrate cache.
 async function initStorage() {
@@ -617,11 +667,11 @@ const partsVal = parts => {
 };
 const indexEntry = rec => {
   const { found, total, pct } = completion(rec.parts);
-  return { setNum: rec.setNum, name: rec.name, year: rec.year, idxVer: 4,
+  return { setNum: rec.setNum, name: rec.name, year: rec.year, idxVer: 5, tags: rec.tags || [],
     img: rec.imgDefault === "box" ? blBoxImg(rec.setNum) : rec.img, triage: rec.triage,
     instructions: rec.instructions, found, total, pct, dateAdded: rec.dateAdded, buyIds: rec.buyIds || [],
     theme: rec.theme || null, bookletQty: (rec.booklets || []).length, donor: !!rec.donor,
-    condition: condOfSet(rec), built: !!rec.built,
+    condition: condOfSet(rec), built: !!rec.built, building: !!rec.building,
     pricePaid: rec.pricePaid || 0, rrp: rec.rrp || 0, boxHas: !!rec.box?.has,
     valueSet: rec.valueSet || null, valuePartOut: rec.valuePartOut || null, ...partsVal(rec.parts) };
 };
@@ -873,6 +923,47 @@ const Chip = ({ label, color, active, onClick }) => html`
     style=${`border-color:${color};color:${active ? "#1C1A17" : color};background:${active ? color : "transparent"}`}>
     ${label}
   </button>`;
+// inline display of an entity's tags (resolved {id,name,color} records)
+const TagChips = ({ tags, small = false, onTap }) => (tags && tags.length) ? html`
+  <div class="row" style="gap:5px;flex-wrap:wrap">
+    ${tags.map(t => html`<span key=${t.id} onClick=${onTap ? (e => { e.stopPropagation(); onTap(); }) : null}
+      style=${`font-size:${small ? 9 : 11}px;font-weight:700;border-radius:999px;padding:${small ? "1px 7px" : "2px 9px"};color:#1C1A17;background:${t.color};white-space:nowrap`}>${t.name}</span>`)}
+  </div>` : null;
+// sheet to toggle which tags are on an entity (and create new ones on the fly)
+function TagPickerSheet({ title = "Tags", sub, tags, selected, onChange, createTag, onClose }) {
+  const [name, setName] = useState("");
+  const [ci, setCi] = useState(0);
+  const sel = new Set(selected || []);
+  const toggle = id => { const n = new Set(sel); n.has(id) ? n.delete(id) : n.add(id); onChange([...n]); };
+  const add = () => {
+    const nm = name.trim(); if (!nm) return;
+    const id = createTag(nm, TAG_COLORS[ci % TAG_COLORS.length]);
+    if (!sel.has(id)) onChange([...(selected || []), id]);
+    setName("");
+  };
+  return html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div class="sheet">
+      <${Header} title=${title} sub=${sub} onBack=${onClose} />
+      ${(tags || []).length === 0 && html`<div class="dim" style="font-size:13px;margin-bottom:10px">No tags yet — type a name below to create your first.</div>`}
+      <div class="row" style="gap:7px;flex-wrap:wrap;margin-bottom:14px">
+        ${(tags || []).map(t => { const on = sel.has(t.id);
+          return html`<button key=${t.id} class="chip" onClick=${() => toggle(t.id)}
+            style=${`border-color:${t.color};color:${on ? "#1C1A17" : t.color};background:${on ? t.color : "transparent"}`}>${on ? "✓ " : ""}${t.name}</button>`; })}
+      </div>
+      <${Label}>New tag</${Label}>
+      <div class="row" style="gap:6px;margin-bottom:8px">
+        <input style="flex:1" placeholder="Tag name" value=${name} onInput=${e => setName(e.target.value)}
+          onKeyDown=${e => { if (e.key === "Enter") add(); }} />
+        <button class="step plus" style="width:54px" disabled=${!name.trim()} onClick=${add}>+</button>
+      </div>
+      <div class="row" style="gap:7px;flex-wrap:wrap;margin-bottom:14px">
+        ${TAG_COLORS.map((c, i) => html`<button key=${c} onClick=${() => setCi(i)}
+          style=${`width:30px;height:30px;border-radius:50%;background:${c};border:3px solid ${i === ci ? "var(--text)" : "transparent"};flex-shrink:0`}></button>`)}
+      </div>
+      <button class="btn" onClick=${onClose}>Done</button>
+    </div>
+  </div></${Portal}>`;
+}
 // part thumbnail with graceful fallback (BrickLink hotlinks 404 for some colour/part combos)
 function Thumb({ src, size = 40 }) {
   const [err, setErr] = useState(false);
@@ -912,6 +1003,8 @@ function PartColorQtySheet({ part, title = "Edit part", linkTargets = null, onSa
   const [err, setErr] = useState("");
   const [sel, setSel] = useState({ colorName: part.colorName || "", rbColorId: part.rbColorId ?? null, img: part.img || null });
   const [forKey, setForKey] = useState(part.forType && part.forId != null ? `${part.forType}:${part.forId}` : "");
+  const [catOv, setCatOv] = useState(() => part.partNum ? partTypeOverride(part.partNum) : null);
+  const autoType = partType(part.name, null);
   useEffect(() => { (async () => {
     if (!getKey().trim()) { setErr("Add your Rebrickable key in Settings to load colours."); setBusy(false); return; }
     try { const cs = await fetchPartColors(part.partNum);
@@ -924,6 +1017,7 @@ function PartColorQtySheet({ part, title = "Edit part", linkTargets = null, onSa
   const save = () => {
     const patch = { colorName: sel.colorName, rbColorId: sel.rbColorId, img: sel.img, qty: Math.max(1, parseInt(qty) || 1) };
     if (linkTargets) { const [t, id] = forKey ? forKey.split(/:(.+)/) : [null, null]; patch.forType = t || null; patch.forId = id ?? null; }
+    if (part.partNum) setPartTypeOverride(part.partNum, catOv);
     onSave(patch);
   };
   const n = Math.max(1, parseInt(qty) || 1);
@@ -942,6 +1036,12 @@ function PartColorQtySheet({ part, title = "Edit part", linkTargets = null, onSa
           style="width:100%;margin-bottom:14px;padding:11px;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);font-size:14px">
           <option value="">— Not linked —</option>
           ${linkTargets.map(t => html`<option key=${`${t.type}:${t.id}`} value=${`${t.type}:${t.id}`}>${t.label}</option>`)}
+        </select>`}
+      ${part.partNum && html`<${Label}>Part category${catOv ? " · overridden" : ""}</${Label}>
+        <select value=${catOv || "__auto"} onChange=${e => setCatOv(e.target.value === "__auto" ? null : e.target.value)}
+          style="width:100%;margin-bottom:14px;padding:11px;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);font-size:14px">
+          <option value="__auto">Auto — ${autoType}</option>
+          ${PART_TYPE_DISPLAY.map(g => html`<option key=${g} value=${g}>${g}</option>`)}
         </select>`}
       <${Label}>Colour${sel.colorName ? ` · ${sel.colorName}` : ""}</${Label}>
       ${busy && html`<div class="dim" style="padding:16px;text-align:center">Loading colours…</div>`}
@@ -1195,7 +1295,7 @@ function App() {
   const [tab, setTab] = useState("sets");
   const [index, setIndex] = useState(() => {
     let idx = load("bt:index", []);
-    if (idx.some(e => e.fullVal === undefined || e.bookletQty === undefined || e.condition === undefined || e.idxVer !== 4)) {
+    if (idx.some(e => e.fullVal === undefined || e.bookletQty === undefined || e.condition === undefined || e.idxVer !== 5)) {
       idx = idx.map(e => { const rec = load(`bt:set:${e.setNum}`, null); return rec ? indexEntry(rec) : e; });
       save("bt:index", idx);
     }
@@ -1278,6 +1378,31 @@ function App() {
     });
   }, []);
 
+  // ---------- tags (shared registry + CRUD; entities store tag-id arrays) ----------
+  const [tags, setTags] = useState(() => loadTags());
+  const saveTags = next => { setTags(next); save("bt:tags", next); };
+  const createTag = (name, color) => {
+    const nm = (name || "").trim();
+    const existing = tags.find(t => t.name.toLowerCase() === nm.toLowerCase());
+    if (existing) return existing.id;
+    const t = { id: newTagId(), name: nm, color: color || TAG_COLORS[tags.length % TAG_COLORS.length] };
+    saveTags([...tags, t]);
+    return t.id;
+  };
+  const updateTag = (id, patch) => saveTags(tags.map(t => t.id === id ? { ...t, ...patch } : t));
+  const deleteTag = id => {
+    saveTags(tags.filter(t => t.id !== id));
+    for (const e of index) {
+      const rec = load(`bt:set:${e.setNum}`, null);
+      if (rec && (rec.tags || []).includes(id)) { rec.tags = rec.tags.filter(x => x !== id); persistSet(rec); }
+    }
+    setMocs(prev => { const next = prev.map(m => (m.tags || []).includes(id) ? { ...m, tags: m.tags.filter(x => x !== id) } : m); save("bt:mocs", next); return next; });
+    setWtbListsRaw(prev => { const next = prev.map(l => ({ ...l, tags: (l.tags || []).filter(x => x !== id), parts: (l.parts || []).map(p => (p.tags || []).includes(id) ? { ...p, tags: p.tags.filter(x => x !== id) } : p) })); save("bt:wtbLists", next); return next; });
+    const pm = { ...loadPartTags() }; let ch = false;
+    for (const k of Object.keys(pm)) { if (pm[k].includes(id)) { pm[k] = pm[k].filter(x => x !== id); if (!pm[k].length) delete pm[k]; ch = true; } }
+    if (ch) save("bt:partTags", pm);
+  };
+
   const backFromSet = () => {
     setOpenSetNum(null);
     if (setOrigin === "buys") setTab("buys");
@@ -1324,11 +1449,13 @@ function App() {
             openMerchId=${openMerchId} setOpenMerchId=${setOpenMerchId}
             mocs=${mocs} upsertMoc=${upsertMoc} allocBySet=${allocBySet} onOpenMoc=${setOpenMocId}
             wtbLists=${wtbLists} saveWtbLists=${saveWtbLists} upsertWtbList=${upsertWtbList}
+            tags=${tags} createTag=${createTag}
             onOpen=${n => { setSetOrigin(null); setOpenSetNum(n); }} onAdd=${() => setAdding(true)} />`}
         ${tab === "sets" && !openSetNum && !adding && openMocId && html`
           <${MocDetail} key=${openMocId} moc=${mocs.find(m => m.id === openMocId)} mocs=${mocs} index=${index}
             upsertMoc=${upsertMoc} deleteMoc=${id => { deleteMoc(id); setOpenMocId(null); }}
             wtbLists=${wtbLists} pushMissingToWtb=${pushMissingToWtb}
+            tags=${tags} createTag=${createTag}
             onBack=${() => setOpenMocId(null)} />`}
         ${tab === "sets" && adding && html`
           <${AddSet} key="v-addset" buys=${buys} cats=${cats} addBuy=${addBuy} existing=${index.map(e => e.setNum)}
@@ -1341,6 +1468,7 @@ function App() {
         ${tab === "sets" && openSetNum && !adding && html`
           <${SetDetail} key=${"v-set-" + openSetNum} setNum=${openSetNum} buys=${buys} cats=${cats} addBuy=${addBuy} persistSet=${persistSet}
             mocs=${mocs} upsertMoc=${upsertMoc} wtbLists=${wtbLists} pushMissingToWtb=${pushMissingToWtb}
+            tags=${tags} createTag=${createTag}
             onBack=${backFromSet} onDelete=${() => deleteSet(openSetNum)} />`}
         ${tab === "sort" && html`<${SortingMode} key="v-sort" index=${index} buys=${buys} persistSet=${persistSet} />`}
         ${tab === "buys" && html`<${Buys} key="v-buys" buys=${buys} index=${index} cats=${cats} merch=${merch} onOpenMerch=${openMerchFromBuys} upsertMerch=${upsertMerch}
@@ -1349,6 +1477,7 @@ function App() {
         ${tab === "settings" && html`<${Settings} key="v-settings" index=${index} buys=${buys} merch=${merch} saveMerchList=${saveMerchList}
           mocs=${mocs} saveMocs=${saveMocs} wtbLists=${wtbLists} saveWtbLists=${saveWtbLists}
           persistIndex=${persistIndex} setBuys=${setBuys}
+          tags=${tags} createTag=${createTag} updateTag=${updateTag} deleteTag=${deleteTag} saveTags=${saveTags}
           cats=${cats} saveCats=${saveCats} addCat=${addCat} renameCat=${renameCat} delCat=${delCat} />`}
       </div>
 
@@ -1363,7 +1492,8 @@ function App() {
 }
 
 // ---------- Sets list ----------
-function SetCard({ e, buys, onOpen, showBuys = true, mocPcs = 0, compact = false, expanded = false, onToggleExpand }) {
+function SetCard({ e, buys, onOpen, showBuys = true, mocPcs = 0, compact = false, expanded = false, onToggleExpand, tags = [] }) {
+  const myTags = resolveTags(tags, e.tags);
   const linked = showBuys ? (e.buyIds || []).map(id => buys.find(b => b.id === id)).filter(Boolean) : [];
   const channels = [...new Set(linked.map(b => b.category).filter(Boolean))];
   const isNew = e.condition === "new";
@@ -1382,9 +1512,11 @@ function SetCard({ e, buys, onOpen, showBuys = true, mocPcs = 0, compact = false
       ${e.theme && html`<span class="badge" style="color:var(--purple);border:1px solid var(--purple)">${e.theme}</span>`}
       ${mocPcs > 0 && html`<span class="badge" style="color:var(--blue);border:1px solid var(--blue)">♻️ ${mocPcs} → MOC · ${inSet} in set</span>`}
       ${e.built && html`<span class="badge" style="color:var(--green);border:1px solid var(--green)">Built ✓</span>`}
+      ${e.building && !e.built && html`<span class="badge" style="color:var(--yellow);border:1px solid var(--yellow)">🔨 Building</span>`}
       ${!isNew && e.pct >= 90 && e.pct < 100 && html`<span class="badge" style="color:var(--green);border:1px solid var(--green)">near complete</span>`}
       ${!isNew && e.pct === 100 && html`<span class="badge" style="color:#1C1A17;background:var(--green)">complete</span>`}
     </div>
+    ${myTags.length > 0 && html`<div style="margin-top:5px"><${TagChips} tags=${myTags} small /></div>`}
     ${(e.valueSet || e.valuePartOut || e.fullVal || priceLine) ? html`<div class="mono" style="margin-top:4px;font-size:11px;font-weight:700;line-height:1.45">
       ${(e.valueSet || e.valuePartOut) ? html`<div class="row" style="gap:10px">
         ${e.valueSet ? html`<span style="color:var(--yellow)">Set ${money(e.valueSet)}</span>` : ""}
@@ -1709,8 +1841,12 @@ function parseWantedList(text) {
   return out;
 }
 
-function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], pushMissingToWtb, onBack }) {
+function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack }) {
   const [mode, setMode] = useState(null); // null | "add" | "return"
+  const [tagPick, setTagPick] = useState(false);
+  const [recatTick, setRecatTick] = useState(0); // re-render after a part recategorise
+  const [importSet, setImportSet] = useState(""); // set number to import an exact parts list from
+  const [importSetBusy, setImportSetBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [srcSet, setSrcSet] = useState("");
@@ -1849,6 +1985,34 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     setImportMsg(`Imported ${lots} part${lots === 1 ? "" : "s"} (${pcs} pcs).`);
     setTimeout(() => setImportMsg(""), 4000);
   };
+  // Request 2: fetch a real set's EXACT inventory from Rebrickable and add it as this MOC's parts
+  // list — for building a set from your own bulk instead of buying it boxed. Merges main + minifig
+  // parts (skips spares / separators / sticker sheets) and collapses duplicates by part+colour.
+  const importSetParts = async () => {
+    const sn = normSetNum(importSet);
+    if (!sn) return;
+    if (!getKey().trim()) { setImportMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setImportMsg(""), 3500); return; }
+    setImportSetBusy(true); setImportMsg("");
+    try {
+      const r = await fetchFullSet(sn);
+      const rows = [];
+      for (const p of r.parts) if (!p.isSpare && !isExcludedPart(p)) rows.push(p);
+      for (const f of (r.minifigs || [])) for (const p of (f.parts || [])) if (!p.isSpare && !isExcludedPart(p)) rows.push(p);
+      const map = new Map();
+      for (const p of rows) {
+        const k = `${p.partNumber}|${p.colorID}`;
+        const ex = map.get(k);
+        if (ex) ex.qty += p.qtyNeeded;
+        else map.set(k, { partNum: p.partNumber, name: p.partName, colorName: p.colorName, rbColorId: p.colorID, img: p.img, qty: p.qtyNeeded });
+      }
+      const additions = [...map.values()];
+      upsertMoc({ ...moc, wanted: [...wanted, ...additions] });
+      setImportSet("");
+      setImportMsg(`Imported ${additions.length} part${additions.length === 1 ? "" : "s"} from ${r.meta.setNum} — ${r.meta.name}.`);
+      setTimeout(() => setImportMsg(""), 5000);
+    } catch (e) { setImportMsg(e.message || "Import failed."); }
+    setImportSetBusy(false);
+  };
   const toggleGroup = id => setOpenGroups(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   // outstanding allocations grouped by source set
@@ -1980,8 +2144,13 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     <button class="btn" onClick=${() => setMode(null)}>Done</button>
   </div>`;
 
+  const mocTags = resolveTags(tags, moc.tags);
   return html`<div class="navin" key="moc-main">
     <${Header} title=${moc.name} sub=${`${stats.pcs} real pcs · ${stats.sets} source set${stats.sets === 1 ? "" : "s"}${wantTotal ? ` · ${wantPct}% of plan` : ""}`} onBack=${onBack} />
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      ${mocTags.length > 0 && html`<${TagChips} tags=${mocTags} />`}
+      <button class="chip" style="border-color:var(--purple);color:var(--purple)" onClick=${() => setTagPick(true)}>🏷 ${mocTags.length ? "Edit tags" : "Add tags"}</button>
+    </div>
     <div class="card row" style="gap:14px">
       ${moc.photoIds?.[0] && photoSrc(moc.photoIds[0])
         ? html`<img style="width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid var(--line);flex-shrink:0" src=${photoSrc(moc.photoIds[0])}/>`
@@ -2017,7 +2186,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
         if (!wanted.length) return null;
         // group the parts list by colour bucket (or part type) so it reads like a set's parts list
         const map = new Map();
-        wanted.forEach((w, i) => { const g = partGroup === "type" ? partType(w.name) : colorGroup(w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push({ w, i }); });
+        wanted.forEach((w, i) => { const g = partGroup === "type" ? partType(w.name, w.partNum) : colorGroup(w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push({ w, i }); });
         const rank = partGroup === "type" ? typeRank : groupRank;
         const entries = [...map.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
         return entries.map(([g, items]) => {
@@ -2050,6 +2219,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
                     dn > 0 && html`<button style=${lnk} onClick=${() => setSourceFor({ pn: w.partNum, kind: "donor" })}>Found ${dn} in donor</button>`,
                     av > 0 && html`<button style=${lnk} onClick=${() => setSourceFor({ pn: w.partNum, kind: "avail" })}>${dn > 0 ? `${av} in sets` : `Found ${av} in sets`}</button>`,
                   ].filter(Boolean).map((el, j) => html`${j ? " • " : ""}${el}`)}` : ""}</div>
+                  ${(() => { const pt = resolveTags(tags, partTagIds(w.partNum)); return pt.length ? html`<div style="margin-top:3px"><${TagChips} tags=${pt} small /></div>` : null; })()}
                 </div>
                 <button class="step" style="width:28px;height:28px;flex-shrink:0" disabled=${(w.qty || 1) <= 1} onClick=${() => setWantQtyAt(i, (w.qty || 1) - 1)}>−</button>
                 <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:36px">
@@ -2093,6 +2263,13 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
             <button class="step plus" style="width:40px" onClick=${() => addSearchResult(p)}>+</button>
           </div>`)}
         </div>`}
+        <div class="label" style="margin-top:12px">Import a set's exact parts (Rebrickable)</div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">Building this set from your own bulk instead of buying it? Pull its full inventory in as the parts list, then track what you have.</div>
+        <div class="row" style="gap:6px">
+          <input style="flex:1" inputmode="numeric" placeholder="Set # — e.g. 75281" value=${importSet} onInput=${e => setImportSet(e.target.value)}
+            onKeyDown=${e => { if (e.key === "Enter") importSetParts(); }} />
+          <button class="step plus" style="width:auto;padding:0 12px;font-size:13px" disabled=${importSetBusy || !importSet.trim()} onClick=${importSetParts}>${importSetBusy ? "…" : "Import"}</button>
+        </div>
         <button class="ghost" style="margin-top:10px" onClick=${() => setImportOpen(true)}>⬇ Import from XML / CSV…</button>
       </div>`}
     </${Acc}>
@@ -2164,7 +2341,11 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     ${editing && html`<${MocSheet} initial=${moc} onClose=${() => setEditing(false)}
       onSave=${m => { upsertMoc(m); setEditing(false); }} />`}
 
-    ${viewPart && html`<${PartImgViewer} p=${viewPart} onClose=${() => setViewPart(null)} />`}
+    ${tagPick && html`<${TagPickerSheet} title="MOC tags" sub=${moc.name}
+      tags=${tags} selected=${moc.tags || []} createTag=${createTag}
+      onChange=${ids => upsertMoc({ ...moc, tags: ids })} onClose=${() => setTagPick(false)} />`}
+
+    ${viewPart && html`<${PartImgViewer} p=${viewPart} tags=${tags} createTag=${createTag} onRecat=${() => setRecatTick(t => t + 1)} onClose=${() => setViewPart(null)} />`}
 
     ${editWanted && html`<${PartColorQtySheet} part=${editWanted.w} title="Edit part"
       onClose=${() => setEditWanted(null)}
@@ -2276,7 +2457,7 @@ function WtbAddPart({ onAdd, linkTargets }) {
 // WTB list detail — split into "To Get" (still short) and "Got It" (have ≥ qty) collapsible
 // sections, each colour-grouped with thumbnails. Per-row: typeable got-qty, swipe Edit (colour/qty/
 // For) + Delete, tap thumbnail to enlarge, tap name to toggle got (moves the part between sections).
-function WtbListDetail({ list, info, mocs = [], index = [], onSetHave, onUpdate, syncMode, onDelete, onOpenLink, onBack }) {
+function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag, onSetHave, onUpdate, syncMode, onDelete, onOpenLink, onBack }) {
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(list.name || "");
   const [confirmDel, setConfirmDel] = useState(false);
@@ -2343,6 +2524,7 @@ function WtbListDetail({ list, info, mocs = [], index = [], onSetHave, onUpdate,
             <span class="mono" style=${`font-size:11px;font-weight:700;color:${done ? "var(--green)" : "var(--dim)"}`}>${qty} needed / ${have} got</span>
           </div>
           ${fl && html`<div style="margin-top:4px"><span class="badge" style="font-size:10px;color:var(--blue);border:1px solid var(--blue)">For: ${fl}</span></div>`}
+          ${(() => { const pt = resolveTags(tags, partTagIds(p.partNum)); return pt.length ? html`<div style="margin-top:4px"><${TagChips} tags=${pt} small /></div>` : null; })()}
         </div>
       </div>
     </${SwipeRow}>`;
@@ -2409,14 +2591,17 @@ function WtbListDetail({ list, info, mocs = [], index = [], onSetHave, onUpdate,
       ? html`<button class="ghost" style="color:var(--red);border-color:var(--red)" onClick=${() => setConfirmDel(true)}>Delete list…</button>`
       : html`<div class="row" style="gap:8px"><button class="ghost" style="flex:1" onClick=${() => setConfirmDel(false)}>Cancel</button><button class="btn red" style="flex:2" onClick=${onDelete}>Delete list permanently</button></div>`}
     <div style="height:16px"></div>
-    ${viewPart && html`<${PartImgViewer} p=${viewPart} onClose=${() => setViewPart(null)} />`}
+    ${viewPart && html`<${PartImgViewer} p=${viewPart} tags=${tags} createTag=${createTag} onClose=${() => setViewPart(null)} />`}
     ${editPart && html`<${PartColorQtySheet} part=${editPart} title="Edit part" linkTargets=${linkTargets}
       onClose=${() => setEditPart(null)}
       onSave=${patch => { patchPart(editPart.id, patch); setEditPart(null); }} />`}
   </div>`;
 }
 
-function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, deleteMerch, openMerchId, setOpenMerchId, mocs = [], upsertMoc, allocBySet, onOpenMoc, wtbLists = [], saveWtbLists, upsertWtbList, onOpen, onAdd }) {
+function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, deleteMerch, openMerchId, setOpenMerchId, mocs = [], upsertMoc, allocBySet, onOpenMoc, wtbLists = [], saveWtbLists, upsertWtbList, tags = [], createTag, onOpen, onAdd }) {
+  const [tagM, setTagMRaw] = useState(() => load("bt:sv:tagM", [])); // tag-id filter (sets segment); empty = all
+  const setTagM = v => { setTagMRaw(v); save("bt:sv:tagM", v); };
+  const toggleTagM = id => setTagM(tagM.includes(id) ? tagM.filter(x => x !== id) : [...tagM, id]);
   const [newMoc, setNewMoc] = useState(false);
   const [openWtbId, setOpenWtbId] = useState(null); // WTB list being viewed
   const [newWtb, setNewWtb] = useState(false);
@@ -2450,6 +2635,8 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   const toggleExpanded = n => setExpandedIds(prev => { const x = new Set(prev); x.has(n) ? x.delete(n) : x.add(n); return x; });
   const [bkind, setBkindRaw] = useState(() => load("bt:sv:bkind", "all")); // by-buy view: bulk | regular | all
   const setBkind = v => { setBkindRaw(v); save("bt:sv:bkind", v); };
+  const [buyPick, setBuyPickRaw] = useState(() => load("bt:sv:buypick", "")); // by-buy view: narrow to one specific buy
+  const setBuyPick = v => { setBuyPickRaw(v); save("bt:sv:buypick", v); };
   const [openNav, setOpenNav] = useState(null); // null | "triage" | "theme"
   const setSort = v => { const nv = typeof v === "function" ? v(sort) : v; setSortRaw(nv); save("bt:sv:sort", nv); };
   const setView = v => { setViewRaw(v); save("bt:sv:view", v); };
@@ -2457,6 +2644,8 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   const setCondF = v => { setCondFRaw(v); save("bt:sv:cond", v); };
   const [incompleteOnly, setIncRaw] = useState(() => load("bt:sv:incomplete", false));
   const setIncompleteOnly = v => { setIncRaw(v); save("bt:sv:incomplete", v); };
+  const [buildingOnly, setBuildingRaw] = useState(() => load("bt:sv:building", false));
+  const setBuildingOnly = v => { setBuildingRaw(v); save("bt:sv:building", v); };
   const [openBuyGroups, setOpenBuyGroups] = useState(() => new Set(load("bt:sv:groups", [])));
   const toggleBuyGroup = id => setOpenBuyGroups(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id);
@@ -2504,18 +2693,27 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
     if (themeM.length) l = l.filter(e => themeM.includes(themeOf(e)));
     if (condF !== "all") l = l.filter(e => (e.condition === "new" ? "new" : "used") === condF);
     if (incompleteOnly) l = l.filter(e => (e.pct || 0) < 100);
+    if (buildingOnly) l = l.filter(e => e.building);
+    if (tagM.length) l = l.filter(e => tagM.every(id => (e.tags || []).includes(id)));
     const dir = sortDir === "asc" ? -1 : 1; // base comparators are descending; flip for asc
     return [...l].sort((a, b) => dir * (
       sort === "pct" ? b.pct - a.pct :
       sort === "value" ? bestVal(b) - bestVal(a) :
       b.dateAdded - a.dateAdded));
-  }, [index, filterM, themeM, sort, sortDir, allTriage, condF, incompleteOnly]);
+  }, [index, filterM, themeM, sort, sortDir, allTriage, condF, incompleteOnly, buildingOnly, tagM]);
 
   // by-buy view (v0.21): groups by CHANNEL — all Amazon together, all FB Marketplace together…
   // A set spanning channels appears under each; unlinked sets under No Buy (All segment only).
   const buyGroups = useMemo(() => {
     if (view !== "bybuy") return [];
     const kindOk = b => bkind === "all" || buyKind(b) === bkind;
+    // narrow to a single specific buy (by its name) → one group of just that buy's sets
+    if (buyPick) {
+      const b = buys.find(x => x.id === buyPick);
+      if (!b) return [];
+      const sets = shown.filter(e => (e.buyIds || []).includes(buyPick));
+      return [{ id: "buy:" + buyPick, label: b.label + (b.category ? ` · ${b.category}` : ""), sets }];
+    }
     const m = new Map(); // channel -> Map(setNum -> entry)
     for (const e of shown) for (const id of (e.buyIds || [])) {
       const b = buys.find(x => x.id === id);
@@ -2532,7 +2730,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
       if (noBuy.length) gs.push({ id: "__nobuy", label: "No Buy Configured", sets: noBuy });
     }
     return gs;
-  }, [view, shown, buys, bkind]);
+  }, [view, shown, buys, bkind, buyPick]);
 
   // by-theme grouping: alpha order, No theme last
   const themeGroups = useMemo(() => {
@@ -2551,7 +2749,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
     return Object.entries(groups).filter(([, l]) => l.length);
   }, [view, shown]);
 
-  const filtersActive = !allTriage || themeM.length > 0 || condF !== "all" || incompleteOnly;
+  const filtersActive = !allTriage || themeM.length > 0 || condF !== "all" || incompleteOnly || buildingOnly || tagM.length > 0;
   const triageActive = allTriage ? "Triage" : `Triage · ${filterM.length}`;
   const themeActive = themeM.length === 0 ? "Theme" : `Theme · ${themeM.length}`;
   const seenMerch = useMemo(() => [...merch].sort((a, b) => b.dateAdded - a.dateAdded), [merch]);
@@ -2579,10 +2777,11 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
         <div style="flex:1;min-width:0">
           <div class="ellip" style="font-weight:700">${m.name}</div>
           <div class="dim mono" style="font-size:12px">${s.pcs} real pcs from ${s.sets} set${s.sets === 1 ? "" : "s"}${(m.pdfs || []).length ? " · 📄" : ""}</div>
-          <div style="margin-top:5px">
+          <div class="row" style="margin-top:5px;gap:6px;flex-wrap:wrap;align-items:center">
             <span class="badge" style=${m.status === "built"
               ? "color:#1C1A17;background:var(--green)"
               : `color:${st[2]};border:1px solid ${st[2]}`}>${st[1]}</span>
+            ${resolveTags(tags, m.tags).length > 0 && html`<${TagChips} tags=${resolveTags(tags, m.tags)} small />`}
           </div>
         </div>
       </div>`;
@@ -2624,7 +2823,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   if (seg === "wtb") {
     const openList = openWtbId ? wtbLists.find(l => l.id === openWtbId) : null;
     if (openList) return html`<${WtbListDetail} key=${"wtb-" + openList.id} list=${openList} info=${wtbLinkInfo(openList)}
-      mocs=${mocs} index=${index}
+      mocs=${mocs} index=${index} tags=${tags} createTag=${createTag}
       onSetHave=${wtbSetHave} onUpdate=${upsertWtbList} syncMode=${wtbSyncMode()}
       onDelete=${() => { saveWtbLists(wtbLists.filter(l => l.id !== openList.id)); setOpenWtbId(null); }}
       onOpenLink=${() => { if (openList.linkType === "set") { setOpenWtbId(null); onOpen(openList.linkId); } else if (openList.linkType === "moc") { setOpenWtbId(null); onOpenMoc(openList.linkId); } }}
@@ -2722,16 +2921,20 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
         onClick=${() => setOpenNav(v => v === "triage" ? null : "triage")} />
       <${Chip} key="c-theme" label=${`${themeActive} ${openNav === "theme" ? "▴" : "▾"}`} color="var(--yellow)" active
         onClick=${() => setOpenNav(v => v === "theme" ? null : "theme")} />
+      ${tags.length > 0 && html`<${Chip} key="c-tags" label=${`${tagM.length ? `🏷 ${tagM.length}` : "🏷 Tags"} ${openNav === "tags" ? "▴" : "▾"}`} color="var(--purple)" active
+        onClick=${() => setOpenNav(v => v === "tags" ? null : "tags")} />`}
       <${Chip} key="c-cond" label=${condF === "new" ? "✨ New" : condF === "used" ? "♻️ Used" : "Condition"} color="var(--green)" active=${condF !== "all"}
         onClick=${() => setCondF(condF === "all" ? "used" : condF === "used" ? "new" : "all")} />
       <${Chip} key="c-inc" label="Incomplete" color="var(--yellow)" active=${incompleteOnly}
         onClick=${() => setIncompleteOnly(!incompleteOnly)} />
+      <${Chip} key="c-building" label="🔨 Building" color="var(--yellow)" active=${buildingOnly}
+        onClick=${() => setBuildingOnly(!buildingOnly)} />
       <${Chip} key="c-sort" label=${(sort === "pct" ? "Completion" : sort === "value" ? "Value" : "Newest")} color="var(--blue)" active
         onClick=${() => setSort(s => s === "date" ? "pct" : s === "pct" ? "value" : "date")} />
       <${Chip} key="c-sortdir" label=${sortDir === "asc" ? "↑ Asc" : "↓ Desc"} color="var(--blue)" active=${false}
         onClick=${() => setSortDir(sortDir === "asc" ? "desc" : "asc")} />
       ${filtersActive && html`<${Chip} key="c-clear" label="✕ Clear" color="var(--red)" active=${false}
-        onClick=${() => { setFilterM(TRIAGE.map(t => t.id)); setThemeM([]); setCondF("all"); setIncompleteOnly(false); setOpenNav(null); }} />`}
+        onClick=${() => { setFilterM(TRIAGE.map(t => t.id)); setThemeM([]); setCondF("all"); setIncompleteOnly(false); setBuildingOnly(false); setTagM([]); setOpenNav(null); }} />`}
     </div>
 
     ${openNav === "triage" && html`<div key="nav-triage" class="card navin" style="padding:10px;display:flex;flex-direction:column;gap:8px">
@@ -2763,13 +2966,26 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
         </button>`;
       })}
     </div>`}
+    ${openNav === "tags" && html`<div key="nav-tags" class="card navin" style="padding:10px;display:flex;flex-direction:column;gap:8px;max-height:50vh;overflow-y:auto">
+      <button class="chip" style=${`border-color:var(--dim);color:${tagM.length === 0 ? "#1C1A17" : "var(--dim)"};background:${tagM.length === 0 ? "var(--dim)" : "transparent"}`}
+        onClick=${() => setTagM([])}>All · ${index.length}</button>
+      ${tags.map(t => {
+        const on = tagM.includes(t.id);
+        return html`<button key=${t.id} class="chip row" style=${`border-color:${t.color};color:${t.color};gap:8px;justify-content:flex-start`}
+          onClick=${() => toggleTagM(t.id)}>
+          <span style=${`width:18px;height:18px;border-radius:5px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;border:2px solid ${t.color};background:${on ? t.color : "transparent"};color:#1C1A17`}>${on ? "✓" : ""}</span>
+          ${t.name} · ${index.filter(e => (e.tags || []).includes(t.id)).length}
+        </button>`;
+      })}
+      <div class="dim" style="font-size:11px">Sets matching ALL ticked tags are shown.</div>
+    </div>`}
 
     ${shown.length === 0 && html`<div class="card dim" style="text-align:center;padding:28px">
       ${index.length === 0 ? "No sets yet. Add one to start triaging." : "Nothing matches this filter. Keep is unticked by default — open Triage to re-tick it."}</div>`}
 
     ${(() => {
       const card = (e, showBuysCard = true) => html`<${SetCard} key=${density + "-" + e.setNum} e=${e} buys=${buys}
-        mocPcs=${allocBySet?.get(e.setNum) || 0} onOpen=${onOpen} showBuys=${showBuysCard}
+        mocPcs=${allocBySet?.get(e.setNum) || 0} onOpen=${onOpen} showBuys=${showBuysCard} tags=${tags}
         compact=${density === "compact"} expanded=${expandedIds.has(e.setNum)}
         onToggleExpand=${() => toggleExpanded(e.setNum)} />`;
       return html`<div>
@@ -2782,9 +2998,15 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
                 style=${`flex:1;border:none;padding:8px;border-radius:9px;font-weight:700;font-size:13px;` +
                   (bkind === id ? "background:var(--yellow);color:#1C1A17" : "background:transparent;color:var(--dim)")}>${label}</button>`)}
           </div>
-          ${buyGroups.length === 0 && html`<div class="card dim" style="text-align:center;padding:24px">No sets under this segment.</div>`}
+          <select value=${buyPick} onChange=${e => setBuyPick(e.target.value)} style="margin-bottom:10px">
+            <option value="">— All buys (grouped by channel) —</option>
+            ${[...buys].filter(b => bkind === "all" || buyKind(b) === bkind).sort((a, b) => (b.date || 0) - (a.date || 0))
+              .map(b => html`<option key=${b.id} value=${b.id}>${b.label}${b.category ? ` · ${b.category}` : ""}</option>`)}
+          </select>
+          ${buyPick && html`<div class="dim" style="font-size:12px;margin:-4px 2px 10px">Showing only sets in this buy. <button style="background:none;border:none;padding:0;color:var(--blue);font-weight:700;text-decoration:underline;cursor:pointer" onClick=${() => setBuyPick("")}>Show all buys</button></div>`}
+          ${buyGroups.length === 0 && html`<div class="card dim" style="text-align:center;padding:24px">${buyPick ? "No sets linked to this buy." : "No sets under this segment."}</div>`}
           ${buyGroups.map(g => {
-            const open = openBuyGroups.has(g.id);
+            const open = openBuyGroups.has(g.id) || !!buyPick;
             return html`<div key=${g.id} style="margin-bottom:8px">
               <button class="row" onClick=${() => toggleBuyGroup(g.id)}
                 style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
@@ -2849,6 +3071,30 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
   const [buyIds, setBuyIds] = useState(() => prefBuy ? [prefBuy.id] : lastBuy ? [lastBuy.id] : []);
   const [scan, setScan] = useState(false);
   const [scanPart, setScanPart] = useState(null); // scan returned a PART, not a set
+  // Request 1: when the scan matches a PART, resolve which SET(s) contain it on Rebrickable and let
+  // you pick one to add — instead of dead-ending. {stage:'busy'|'colors'|'sets'|'error', ...}
+  const [pf, setPf] = useState(null);
+  async function pfStart(it) {
+    setPf({ stage: "busy", msg: "Looking up the part…" });
+    try {
+      const part = await resolveRbPart(it.id);
+      if (!part) { setPf({ stage: "error", msg: `Couldn't resolve "${it.name}" (${it.id}) on Rebrickable — scan the box / instructions, or type the set number.` }); return; }
+      const cj = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(part.part_num)}/colors/?page_size=200`);
+      const colors = (cj.results || []).sort((a, b) => (b.num_sets || 0) - (a.num_sets || 0));
+      if (!colors.length) { setPf({ stage: "error", msg: "No set data for this part on Rebrickable." }); return; }
+      if (colors.length === 1) await pfSets(part, colors[0]);
+      else setPf({ stage: "colors", part, colors });
+    } catch (e) { setPf({ stage: "error", msg: e.message || String(e) }); }
+  }
+  async function pfSets(part, color) {
+    setPf({ stage: "busy", msg: `Finding sets with ${color.color_name}…` });
+    try {
+      const j = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(part.part_num)}/colors/${color.color_id}/sets/?page_size=50`);
+      const sets = (j.results || []).sort((a, b) => (b.year || 0) - (a.year || 0));
+      setPf({ stage: "sets", part, color, sets, count: j.count ?? sets.length });
+    } catch (e) { setPf({ stage: "error", msg: e.message || String(e) }); }
+  }
+  const pfPick = s => { setPf(null); setScanPart(null); setNumRaw(s.set_num); go(s.set_num); };
   const [newReceipt, setNewReceipt] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   // mode: normal | quick | bulk (bulk implies quick) — persisted via the two legacy keys
@@ -3000,22 +3246,55 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
     </div>`}
     ${err && html`<div class="card" style="color:var(--red);font-size:13px">${err}</div>`}
     ${scanPart && html`<div class="card">
-      <div style="font-weight:700;margin-bottom:4px">That's a part, not a set</div>
-      <div class="dim" style="font-size:13px;margin-bottom:10px">Scan found <b style="color:var(--text)">${scanPart.name}</b> (${scanPart.id}). Find which set it belongs to on BrickLink, then type that set number above — or scan the set's box / instructions instead.</div>
-      <a class="btn blue" style="display:block;text-align:center;text-decoration:none" href=${blPartInSets(scanPart.id)} target="_blank">🔗 Find sets with this part on BrickLink ↗</a>
-      <div style="height:8px"></div>
-      <button class="ghost" onClick=${() => setScanPart(null)}>Dismiss</button>
+      <div class="row" style="gap:10px;margin-bottom:8px">
+        ${scanPart.img_url && html`<img class="setimg" src=${scanPart.img_url}/>`}
+        <div style="min-width:0">
+          <div style="font-weight:700">Scan matched a part</div>
+          <div class="dim mono" style="font-size:12px">${scanPart.name} · ${scanPart.id}</div>
+        </div>
+      </div>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">Find which set${pf?.stage === "sets" && pf.count !== 1 ? "s" : ""} this part belongs to, then add it — or scan the box / instructions for a direct set match.</div>
+      ${pf?.stage === "busy" && html`<div class="dim" style="text-align:center;padding:6px">${pf.msg}</div>`}
+      ${pf?.stage === "error" && html`<div class="card" style="color:var(--red);font-size:13px;margin:0 0 8px">${pf.msg}</div>`}
+      ${pf?.stage === "colors" && html`<div style="margin-bottom:8px">
+        <${Label}>${pf.part.name} — pick the colour in hand</${Label}>
+        <div style="display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto">
+          ${pf.colors.map(c => html`<button key=${c.color_id} class="chip" style="border-color:var(--blue);color:var(--blue);text-align:left"
+            onClick=${() => pfSets(pf.part, c)}>${c.color_name} · ${c.num_sets ?? "?"} sets</button>`)}
+        </div>
+      </div>`}
+      ${pf?.stage === "sets" && html`<div style="margin-bottom:8px">
+        <div class="label" style="margin:0 2px 6px">${pf.count} set${pf.count === 1 ? "" : "s"} with this part${pf.count > 50 ? " (showing 50)" : ""} · tap to add</div>
+        ${pf.sets.length === 0 && html`<div class="card dim" style="text-align:center">No sets found for this colour.</div>`}
+        <div style="max-height:300px;overflow:auto">
+          ${pf.sets.map(s => { const tracked = existing.includes(s.set_num);
+            return html`<div key=${s.set_num} class="row" style="gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 8px;margin-bottom:5px;cursor:pointer" onClick=${() => pfPick(s)}>
+              ${s.set_img_url ? html`<img class="setimg" style="width:44px;height:44px" src=${s.set_img_url} loading="lazy"/>` : html`<div class="setimg" style="width:44px;height:44px;background:var(--panel2)"></div>`}
+              <div style="flex:1;min-width:0">
+                <div class="ellip" style="font-weight:700;font-size:13px">${s.name}</div>
+                <div class="dim mono" style="font-size:11px">${s.set_num} · ${s.year}${s.num_parts ? ` · ${s.num_parts} parts` : ""}${tracked ? " · tracked" : ""}</div>
+              </div>
+            </div>`; })}
+        </div>
+      </div>`}
+      <div class="row" style="gap:8px">
+        ${!pf && html`<button class="btn blue" style="flex:1" onClick=${() => pfStart(scanPart)}>🔎 Find the set</button>`}
+        <a class="ghost" style="flex:1;display:flex;align-items:center;justify-content:center;text-decoration:none" href=${blPartInSets(scanPart.id)} target="_blank">BrickLink ↗</a>
+        <button class="ghost" style="flex:1" onClick=${() => { setScanPart(null); setPf(null); }}>Dismiss</button>
+      </div>
     </div>`}
     ${scan && html`<${ScanModal} hint="Scan the box, instructions, or a built model" onClose=${() => setScan(false)}
-      onPick=${it => { setScan(false); setScanPart(null);
+      onPick=${it => { setScan(false); setScanPart(null); setPf(null);
         if ((it.type || "").toLowerCase() === "set") { setNumRaw(it.id); go(it.id); }
-        else setScanPart(it); }} />`}
+        else { setScanPart(it); pfStart(it); } }} />`}
   </div>`;
 }
 
 // ---------- Set detail ----------
-function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, wtbLists = [], pushMissingToWtb, onBack, onDelete }) {
+function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack, onDelete }) {
   const [rec, setRec] = useState(() => load(`bt:set:${setNum}`, null));
+  const [tagPick, setTagPick] = useState(false);
+  const [recatTick, setRecatTick] = useState(0); // bump to recompute type grouping after a recategorise
   const [q, setQ] = useState("");
   const [showSpares, setShowSpares] = useState(false);
   const [hideFound, setHideFound] = useState(false);
@@ -3134,7 +3413,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       !isExcludedPart(p) && (showSpares || !p.isSpare || p.qtyFound > 0) && (!hideFound || p.qtyFound < p.qtyNeeded) &&
       (!ql || p.partName?.toLowerCase().includes(ql) || p.partNumber?.toLowerCase().includes(ql) || p.colorName?.toLowerCase().includes(ql)));
     const keyOf = p => groupMode === "group" ? colorGroup(p.colorName)
-      : groupMode === "type" ? partType(p.partName)
+      : groupMode === "type" ? partType(p.partName, p.partNumber)
       : (p.colorName || "Unknown");
     const map = new Map();
     for (const p of list) { const k = keyOf(p); if (!map.has(k)) map.set(k, []); map.get(k).push(p); }
@@ -3149,7 +3428,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       entries.sort((a, b) => a[0].localeCompare(b[0]));
     }
     return entries;
-  }, [rec.parts, q, showSpares, hideFound, groupMode]);
+  }, [rec.parts, q, showSpares, hideFound, groupMode, recatTick]);
 
   const cond = condOfSet(rec);
   const isNew = cond === "new";
@@ -3208,8 +3487,13 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     </div>
   </div>`;
 
+  const myTags = resolveTags(tags, rec.tags);
   return html`<div>
     <${Header} title=${rec.name} sub=${html`<span>${rec.setNum} · ${rec.year} · <a href=${instrHref(rec.setNum)} target="_blank">📖 Instructions ↗</a></span>`} onBack=${onBack} />
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      ${myTags.length > 0 && html`<${TagChips} tags=${myTags} />`}
+      <button class="chip" style="border-color:var(--purple);color:var(--purple)" onClick=${() => setTagPick(true)}>🏷 ${myTags.length ? "Edit tags" : "Add tags"}</button>
+    </div>
     <div class="card">
       <div class="row" style="gap:14px">
         ${photos.length > 0 && html`<img class="setimg" style="width:72px;height:72px" src=${photos[defaultIdx]?.src || rec.img}
@@ -3239,8 +3523,11 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
                   for (const p of r.parts) if (Object.prototype.hasOwnProperty.call(fill, p.id)) p.qtyFound = fill[p.id];
                   delete r.builtFill;
                 }
+                if (r.built) r.building = false; // built supersedes the in-progress marker
                 return r;
               })}>Built ${rec.built ? "✓" : ""}</button>
+            <button class="badge" style=${rec.building ? "background:var(--yellow);color:#1C1A17;border:none;padding:4px 9px" : "background:transparent;color:var(--dim);border:1px solid var(--line);padding:4px 9px"}
+              onClick=${() => change(r => { r.building = !r.building; return r; })}>🔨 Building ${rec.building ? "✓" : ""}</button>
             ${rec.box?.has && html`<span class="badge" style="color:var(--blue);border:1px solid var(--blue)">📦</span>`}
           </div>
           <div class="dim" style="font-size:13px;margin-top:6px">${logMode === "remaining" ? remainingCounter : statusLine}</div>
@@ -3321,7 +3608,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       </div>
     </${Acc}>
 
-    <${Acc} title="Instructions" summary=${rec.instructions === "paper" ? `Books ${(rec.booklets || []).length}/${rec.bookCount || Math.max((rec.booklets || []).length, 1)}` : rec.instructions === "digital" ? "Reprint" : "None"}
+    <${Acc} title="Instructions" summary=${rec.instructions === "paper" ? `Books ${(rec.booklets || []).length}/${rec.bookCount || Math.max((rec.booklets || []).length, 1)}` : rec.instructions === "leaflet" ? "Leaflet" : rec.instructions === "digital" ? "Reprint" : "None"}
       open=${openAcc.has("instr")} onToggle=${() => toggleAcc("instr")}>
       <div class="row" style="gap:6px">
         ${INSTR.map(i => html`<${Chip} label=${i.label} color="var(--blue)" active=${rec.instructions === i.id}
@@ -3552,7 +3839,10 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     ${galleryAt != null && html`<${SetGalleryViewer} photos=${photos} start=${galleryAt} defaultIdx=${defaultIdx}
       onSetDefault=${i => change(r => { r.imgDefault = photos[i].kind === "box" ? "box" : "rb"; return r; })}
       onClose=${() => setGalleryAt(null)} />`}
-    ${viewPart && html`<${PartImgViewer} p=${viewPart} onClose=${() => setViewPart(null)} />`}
+    ${viewPart && html`<${PartImgViewer} p=${viewPart} tags=${tags} createTag=${createTag} onRecat=${() => setRecatTick(t => t + 1)} onClose=${() => setViewPart(null)} />`}
+    ${tagPick && html`<${TagPickerSheet} title="Set tags" sub=${`${rec.name} · ${rec.setNum}`}
+      tags=${tags} selected=${rec.tags || []} createTag=${createTag}
+      onChange=${ids => change(r => { r.tags = ids; return r; })} onClose=${() => setTagPick(false)} />`}
   </div>`;
 }
 
@@ -3746,7 +4036,16 @@ function PartRow({ p, bump, alloc, onMove, onView, selected = false, onSel, mode
 }
 
 // #3 full-size part image with its number / colour + a BrickLink lookup (disambiguate lookalike parts)
-function PartImgViewer({ p, onClose }) {
+function PartImgViewer({ p, onClose, tags = null, createTag, onRecat }) {
+  const [pick, setPick] = useState(false);
+  const [ids, setIds] = useState(() => p.partNumber ? partTagIds(p.partNumber) : []);
+  const canTag = tags && createTag && p.partNumber;
+  const myTags = canTag ? resolveTags(tags, ids) : [];
+  const setTagsFor = next => { setIds(next); setPartTagIds(p.partNumber, next); };
+  // manual part-type recategorisation (global by partKey)
+  const [ov, setOv] = useState(() => p.partNumber ? partTypeOverride(p.partNumber) : null);
+  const autoType = partType(p.partName, null); // heuristic result ignoring any override
+  const changeType = g => { const next = g === "__auto" ? null : g; setOv(next); setPartTypeOverride(p.partNumber, next); onRecat?.(); };
   return html`<${Portal}><div class="modal" style="align-items:center" onClick=${e => { if (e.target === e.currentTarget) onClose(); }}>
     <div style="max-width:520px;width:100%;max-height:100dvh;padding:16px;position:relative;display:flex;flex-direction:column;justify-content:center">
       <button class="step" style="position:absolute;top:26px;right:26px;z-index:2;background:rgba(0,0,0,.65);border-color:rgba(255,255,255,.3);color:#fff" onClick=${onClose}>✕</button>
@@ -3760,8 +4059,23 @@ function PartImgViewer({ p, onClose }) {
           <a href=${`https://www.bricklink.com/v2/catalog/catalogitem.page?P=${encodeURIComponent(p.partNumber || "")}`} target="_blank" style="font-size:13px;font-weight:600">BrickLink part ↗</a>
           <a href=${blPartInSets(p.partNumber)} target="_blank" style="font-size:13px;font-weight:600">In which sets ↗</a>
         </div>
+        ${canTag && html`<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+          ${myTags.length > 0 && html`<${TagChips} tags=${myTags} />`}
+          <button class="chip" style="border-color:var(--purple);color:var(--purple)" onClick=${() => setPick(true)}>🏷 ${myTags.length ? "Edit tags" : "Add tags"}</button>
+        </div>
+        <div class="dim" style="font-size:11px;margin-top:6px">Tags on a part apply everywhere that part appears.</div>`}
+        ${p.partNumber && html`<div style="margin-top:10px">
+          <${Label}>Part category${ov ? " · overridden" : ""}</${Label}>
+          <select value=${ov || "__auto"} onChange=${e => changeType(e.target.value)}>
+            <option value="__auto">Auto — ${autoType}</option>
+            ${PART_TYPE_DISPLAY.map(g => html`<option key=${g} value=${g}>${g}</option>`)}
+          </select>
+          <div class="dim" style="font-size:11px;margin-top:6px">Sets the 'Group: Type' bucket for this part everywhere it appears.</div>
+        </div>`}
       </div>
     </div>
+    ${pick && html`<${TagPickerSheet} title="Part tags" sub=${`${p.partName || ""} · ${p.partNumber}`}
+      tags=${tags} selected=${ids} onChange=${setTagsFor} createTag=${createTag} onClose=${() => setPick(false)} />`}
   </div></${Portal}>`;
 }
 
@@ -4595,7 +4909,9 @@ function Section({ title, children }) {
   </div>`;
 }
 
-function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs, wtbLists = [], saveWtbLists, persistIndex, setBuys, cats, saveCats, addCat, renameCat, delCat }) {
+function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs, wtbLists = [], saveWtbLists, persistIndex, setBuys, tags = [], createTag, updateTag, deleteTag, saveTags, cats, saveCats, addCat, renameCat, delCat }) {
+  const [newTagName, setNewTagName] = useState("");
+  const [newTagCi, setNewTagCi] = useState(0);
   const [key, setKeyState] = useState(getKey());
   const [saved, setSaved] = useState(false);
   const [msg, setMsg] = useState("");
@@ -4641,7 +4957,7 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
       const s = load(photoKey(id), null);
       if (s) photos[id] = s;
     }
-    const blob = new Blob([JSON.stringify({ v: 7, exported: new Date().toISOString(), apiKey: getKey(), buys, sets, cats, merch, mocs, wtbLists, photos, buyOrder: load("bt:buyorder", []) })], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ v: 8, exported: new Date().toISOString(), apiKey: getKey(), buys, sets, cats, merch, mocs, wtbLists, tags, partTags: loadPartTags(), partTypeOverrides: loadPartTypes(), photos, buyOrder: load("bt:buyorder", []) })], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `bricktriage-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -4663,6 +4979,9 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
       if (j.merch) saveMerchList?.(j.merch);
       if (j.mocs) saveMocs?.(j.mocs);
       if (j.wtbLists) saveWtbLists?.(j.wtbLists);
+      if (j.tags) saveTags?.(j.tags);
+      if (j.partTags) save("bt:partTags", j.partTags);
+      if (j.partTypeOverrides) save("bt:partTypeOverrides", j.partTypeOverrides);
       if (j.cats) saveCats(j.cats);
       if (j.buyOrder) save("bt:buyorder", j.buyOrder);
       let keyRestored = false;
@@ -4678,8 +4997,8 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
     del("bt:bv:kind"); del("bt:bv:cat"); del("bt:bv:sort");
     del("bt:sv:filter"); del("bt:sv:sort"); del("bt:sv:view"); del("bt:sv:groups");
     del("bt:sv:theme"); del("bt:sv:tgroups"); del("bt:sv:seg"); del("bt:sortTarget");
-    del("bt:wtb"); del("bt:wtbLists");
-    persistIndex([]); setBuys([]); saveMerchList?.([]); saveMocs?.([]); saveWtbLists?.([]); setConfirmWipe(false); setMsg("All data wiped.");
+    del("bt:wtb"); del("bt:wtbLists"); del("bt:tags"); del("bt:partTags"); del("bt:partTypeOverrides");
+    persistIndex([]); setBuys([]); saveMerchList?.([]); saveMocs?.([]); saveWtbLists?.([]); saveTags?.([]); setConfirmWipe(false); setMsg("All data wiped.");
   }
 
   // browser-reported storage usage/quota (IndexedDB included)
@@ -4750,6 +5069,33 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
         <button class="chip" style=${`flex-shrink:0;border-color:${cardTri ? "var(--green)" : "var(--line)"};color:${cardTri ? "#1C1A17" : "var(--dim)"};background:${cardTri ? "var(--green)" : "transparent"}`}
           onClick=${() => { const v = !cardTri; setCardTri(v); save("bt:cardNewTriage", v); }}>${cardTri ? "On" : "Off"}</button>
       </div>
+    </${Section}>
+
+    <${Section} title=${`Tags · ${tags.length}`}>
+      ${tags.length === 0 && html`<div class="dim" style="font-size:13px;margin-bottom:8px">No tags yet. Tags can be added to sets, MOCs, parts and want-list parts, then used to filter. Create one below.</div>`}
+      ${tags.map(t => html`<div class="row" style="margin-bottom:8px" key=${t.id}>
+        <span style=${`font-size:12px;font-weight:700;border-radius:999px;padding:3px 11px;color:#1C1A17;background:${t.color};white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis`}>${t.name}</span>
+        <div style="flex:1"></div>
+        <button class="step" style="width:38px;height:38px;font-size:15px" title="Colour"
+          onClick=${() => { const i = TAG_COLORS.indexOf(t.color); updateTag(t.id, { color: TAG_COLORS[(i + 1) % TAG_COLORS.length] }); }}>🎨</button>
+        <button class="step" style="width:38px;height:38px;font-size:14px" onClick=${() => {
+          const n = prompt("Rename tag", t.name);
+          if (n && n.trim() && n.trim() !== t.name) updateTag(t.id, { name: n.trim() });
+        }}>✎</button>
+        <button class="step" style="width:38px;height:38px;font-size:14px;color:var(--red);border-color:var(--red)"
+          onClick=${() => { if (confirm(`Delete tag "${t.name}"? It is removed from everything it's on.`)) deleteTag(t.id); }}>✕</button>
+      </div>`)}
+      <div class="row" style="gap:8px;margin-top:8px">
+        <input placeholder="New tag" value=${newTagName} onInput=${e => setNewTagName(e.target.value)}
+          onKeyDown=${e => { if (e.key === "Enter" && newTagName.trim()) { createTag(newTagName, TAG_COLORS[newTagCi % TAG_COLORS.length]); setNewTagName(""); } }} />
+        <button class="step plus" style="width:54px" disabled=${!newTagName.trim()}
+          onClick=${() => { createTag(newTagName, TAG_COLORS[newTagCi % TAG_COLORS.length]); setNewTagName(""); }}>+</button>
+      </div>
+      <div class="row" style="gap:7px;flex-wrap:wrap;margin-top:10px">
+        ${TAG_COLORS.map((c, i) => html`<button key=${c} onClick=${() => setNewTagCi(i)}
+          style=${`width:28px;height:28px;border-radius:50%;background:${c};border:3px solid ${i === newTagCi ? "var(--text)" : "transparent"};flex-shrink:0`}></button>`)}
+      </div>
+      <div class="dim" style="font-size:12px;margin-top:8px">🎨 cycles the colour · ✎ renames · ✕ deletes (and strips it from every set / MOC / part using it).</div>
     </${Section}>
 
     <${Section} title=${`Buy channels · ${cats.length}`}>
