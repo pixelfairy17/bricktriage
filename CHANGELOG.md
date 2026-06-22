@@ -9,6 +9,13 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.48.0 — 2026-06-22
+
+- **Loose / PAB buys can itemise parts.** Open a **Loose** buy → **Loose parts** → **+ Add part**: find a part by **📷 scan**, **part number**, or **Rebrickable description search** (the same finder as the want list), optionally pick its **colour**, then record **qty** (a plain text box — no stepper), **price paid**, and any **per-part shipping**.
+- **Live unit price** per part — **(price paid + part shipping) ÷ qty** — so per-piece cost is comparable across different AliExpress sellers / PAB.
+- **Whole-buy shipping.** Loose buys gain an order-level **Shipping** field (Add / Edit buy) for postage on top of per-part shipping. The buy detail shows **Price paid + Shipping + Parts subtotal + Total**, and the **Loose** spend stat now includes shipping and itemised parts.
+- **Fix:** a Loose / PAB buy's detail header no longer mislabels itself as **Bulk** — it now reads **Loose / PAB**.
+
 ## v0.47.0 — 2026-06-20
 
 - **Instructions — Leaflet.** Added a **Leaflet** option alongside *None / Book / Reprint* for single-sheet instructions.
