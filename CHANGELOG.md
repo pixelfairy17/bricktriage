@@ -9,6 +9,18 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.49.0 — 2026-06-24
+
+- **WTB parts list now works like a set's parts list.** Replaced the **To Get / Got It** sections with a single grouped list plus a **filter bar**:
+  - a **text filter** (name / number / colour),
+  - a **Hide purchased** toggle (hides parts where have ≥ qty),
+  - a **Group: Colour ↔ Group: Part** toggle (persists, `bt:wtbpartgroup`),
+  - an **⌄/⌃ All** expand-all / collapse-all chip,
+  - a **↺ Reset filter** chip (clears the text filter + Hide purchased).
+- Typing in the filter **auto-expands** every group. **Clear purchased** replaces the old **Clear Got It** button.
+
+-----
+
 ## v0.48.0 — 2026-06-22
 
 - **Loose / PAB buys can itemise parts.** Open a **Loose** buy → **Loose parts** → **+ Add part**: find a part by **📷 scan**, **part number**, or **Rebrickable description search** (the same finder as the want list), optionally pick its **colour**, then record **qty** (a plain text box — no stepper), **price paid**, and any **per-part shipping**.

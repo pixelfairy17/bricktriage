@@ -89,8 +89,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.48.0";
+const APP_VERSION = "0.49.0";
 const CHANGELOG = [
+  ["0.49.0", "2026-06-24", [
+    "WTB want-list parts list reworked to match a set's parts list. Replaced the To Get / Got It sections with a single grouped list plus a filter bar: a text filter (name / number / colour), a Hide purchased toggle (hides parts you already have ≥ qty), a Group: Colour ↔ Group: Part toggle (persists), an ⌄/⌃ All expand/collapse-all chip, and a ↺ Reset filter chip. Typing in the filter auto-expands every group. Clear purchased replaces Clear Got It.",
+  ]],
   ["0.48.0", "2026-06-22", [
     "Loose / PAB buys can now itemise parts. Open a Loose buy → Loose parts → + Add part: find it by 📷 scan, part number, or Rebrickable description search (same finder as the want list), optionally pick its colour, then record qty (plain text box, no stepper), price paid, and any per-part shipping.",
     "Per-part unit price is computed live: (price paid + part shipping) ÷ qty — so you can compare what each piece actually cost across different AliExpress sellers / PAB.",
@@ -2612,13 +2615,17 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
   const [name, setName] = useState(list.name || "");
   const [confirmDel, setConfirmDel] = useState(false);
   const [open, setOpen] = useState(() => new Set());
-  const [secOpen, setSecOpen] = useState(() => new Set(["toget"])); // To Get open, Got It collapsed
+  // set-style parts filter (mirrors the set parts list): text filter, hide-purchased, group by
+  // colour ↔ part type, expand/collapse all, reset filter.
+  const [q, setQ] = useState("");
+  const [hideGot, setHideGot] = useState(false);
+  const [groupMode, setGroupModeRaw] = useState(() => load("bt:wtbpartgroup", "color")); // color | type
+  const setGroupMode = v => { setGroupModeRaw(v); save("bt:wtbpartgroup", v); };
   const [viewPart, setViewPart] = useState(null); // tap thumbnail → enlarge
   const [editPart, setEditPart] = useState(null);  // swipe Edit → colour/qty/For sheet
   const [imgBusy, setImgBusy] = useState(false);
   const [imgMsg, setImgMsg] = useState("");
   const toggle = g => setOpen(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
-  const toggleSec = s => setSecOpen(prev => { const n = new Set(prev); n.has(s) ? n.delete(s) : n.add(s); return n; });
   const parts = list.parts || [];
   const haveOf = p => p.have != null ? p.have : (p.got ? (p.qty || 1) : 0);
   const s = wtbStats(list);
@@ -2679,18 +2686,28 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
       </div>
     </${SwipeRow}>`;
   };
-  // colour-grouped accordion for a set of parts (reused by both sections)
-  const colorGroups = items => {
+  // set-style filter + grouping: text filter (name/number/colour), optional hide-purchased, then
+  // bucket by colour or part type. Typing in the filter auto-expands every group (like the set list).
+  const ql = q.trim().toLowerCase();
+  const visible = parts.filter(p =>
+    (!hideGot || haveOf(p) < (p.qty || 1)) &&
+    (!ql || (p.name || "").toLowerCase().includes(ql) || (p.partNum || "").toLowerCase().includes(ql) || (p.colorName || "").toLowerCase().includes(ql)));
+  const groups = (() => {
     const m = new Map();
-    for (const p of items) { const g = colorGroup(p.colorName); if (!m.has(g)) m.set(g, []); m.get(g).push(p); }
-    return [...m.entries()].sort((a, b) => groupRank(a[0]).localeCompare(groupRank(b[0])));
-  };
-  const renderGroups = (items, keyPrefix) => colorGroups(items).map(([g, gi]) => {
-    const k = keyPrefix + g, gOpen = open.has(k);
+    for (const p of visible) { const g = groupMode === "type" ? partType(p.name, p.partNum) : colorGroup(p.colorName); if (!m.has(g)) m.set(g, []); m.get(g).push(p); }
+    const rank = groupMode === "type" ? typeRank : groupRank;
+    return [...m.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
+  })();
+  const allOpen = groups.length > 0 && groups.every(([g]) => open.has(g));
+  const toggleAll = () => setOpen(allOpen ? new Set() : new Set(groups.map(([g]) => g)));
+  const resetFilter = () => { setQ(""); setHideGot(false); };
+  const gotCount = parts.filter(p => haveOf(p) >= (p.qty || 1)).length;
+  const renderGroups = entries => entries.map(([g, gi]) => {
+    const gOpen = ql.length > 0 || open.has(g);
     const gHave = gi.reduce((a, p) => a + Math.min(haveOf(p), p.qty || 1), 0);
     const gNeed = gi.reduce((a, p) => a + (p.qty || 1), 0);
-    return html`<div key=${k} style="margin-bottom:6px">
-      <button class="row" onClick=${() => toggle(k)}
+    return html`<div key=${g} style="margin-bottom:6px">
+      <button class="row" onClick=${() => toggle(g)}
         style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;color:var(--text);justify-content:space-between">
         <span class="label" style="margin:0">${g} · ${gi.length}</span>
         <span class="row" style="gap:10px">
@@ -2701,21 +2718,6 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
       ${gOpen && html`<div style="margin-top:6px">${gi.map(renderRow)}</div>`}
     </div>`;
   });
-  const toGet = parts.filter(p => haveOf(p) < (p.qty || 1));
-  const gotIt = parts.filter(p => haveOf(p) >= (p.qty || 1));
-  const section = (id, title, items, hint) => {
-    const o = secOpen.has(id);
-    return html`<div key=${id} style="margin-bottom:10px">
-      <button class="row" onClick=${() => toggleSec(id)}
-        style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 13px;color:var(--text);justify-content:space-between">
-        <span style="font-weight:800;font-size:15px">${title} · ${items.length}</span>
-        <span class="dim">${o ? "▾" : "▸"}</span>
-      </button>
-      ${o && html`<div style="margin-top:8px">
-        ${items.length === 0 ? html`<div class="dim" style="font-size:12px;padding:4px 2px 8px">${hint}</div>` : renderGroups(items, id)}
-      </div>`}
-    </div>`;
-  };
   return html`<div class="navin" key="wtb-detail">
     <${Header} title=${list.name || "Want list"} sub=${`${s.open} to get · ${s.total} parts · ${s.pct}% got`} onBack=${onBack}
       right=${html`<button class="step" style="width:40px" onClick=${() => setRenaming(v => !v)}>✏️</button>`} />
@@ -2733,9 +2735,19 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
     ${imgMsg && html`<div class="dim" style="font-size:12px;margin-top:4px">${imgMsg}</div>`}
     <div style="height:12px"></div>
     ${parts.length === 0 && html`<div class="card dim" style="text-align:center;padding:20px">No parts yet — add above, or push a set/MOC's shortfall from its detail page.</div>`}
-    ${parts.length > 0 && section("toget", "To Get", toGet, "Nothing left to get — all parts are in Got It.")}
-    ${parts.length > 0 && section("gotit", "Got It", gotIt, "Mark a part's got-count up to its needed qty (tap the name, or type / step the count) and it moves here.")}
-    ${gotIt.length > 0 && html`<button class="ghost" style="margin-top:4px" onClick=${() => { if (confirm("Remove all got parts from this list?")) onUpdate({ ...list, parts: toGet }); }}>Clear Got It</button>`}
+    ${parts.length > 0 && html`<div class="card" style="padding:12px">
+      <input placeholder="Filter parts (name / number / colour)" value=${q} onInput=${e => setQ(e.target.value)} />
+      <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
+        <${Chip} label="Hide purchased" color="var(--green)" active=${hideGot} onClick=${() => setHideGot(v => !v)} />
+        <${Chip} label=${groupMode === "type" ? "Group: Part" : "Group: Colour"} color="var(--blue)" active
+          onClick=${() => setGroupMode(groupMode === "type" ? "color" : "type")} />
+        <${Chip} label=${allOpen ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false} onClick=${toggleAll} />
+        <${Chip} label="↺ Reset filter" color="var(--red)" active=${false} onClick=${resetFilter} />
+      </div>
+    </div>`}
+    ${parts.length > 0 && groups.length === 0 && html`<div class="card dim" style="text-align:center;padding:16px;font-size:13px">No parts match the filter.</div>`}
+    ${parts.length > 0 && renderGroups(groups)}
+    ${gotCount > 0 && html`<button class="ghost" style="margin-top:4px" onClick=${() => { if (confirm("Remove all purchased parts from this list?")) onUpdate({ ...list, parts: parts.filter(p => haveOf(p) < (p.qty || 1)) }); }}>Clear purchased (${gotCount})</button>`}
     <div style="height:12px"></div>
     ${!confirmDel
       ? html`<button class="ghost" style="color:var(--red);border-color:var(--red)" onClick=${() => setConfirmDel(true)}>Delete list…</button>`
