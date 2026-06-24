@@ -89,8 +89,21 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.48.0";
+const APP_VERSION = "0.51.0";
 const CHANGELOG = [
+  ["0.51.0", "2026-06-24", [
+    "Local part catalog (cache-first): every set you fetch now feeds a local parts database (bt:parts) — part name + the colour-correct image per colour. Adding a part or set whose parts you already own is now instant and works offline, with no blank/wrong-colour thumbnails, because it reads the catalog first and only calls Rebrickable for parts it has never seen.",
+    "WTB 'Add a part' by number resolves instantly from the catalog when you already own that part (no key / no network needed); description search and brand-new parts still use Rebrickable (and get cached on the way through).",
+    "The catalog also back-fills once from sets you fetched before this version, and tops up whenever you open a set — so older and restored sets count too. Stores text + image URLs only (no image blobs), so backups stay small.",
+  ]],
+  ["0.50.0", "2026-06-24", [
+    "WTB part rows now look exactly like a set's parts list: tappable thumbnail to enlarge, tap the name to toggle got, and a horizontal − / got/needed / + stepper (replacing the typeable got box + 'N needed / M got' text). Complete rows go green-bordered and dimmed, same as a set.",
+    "WTB images now fetch automatically when a list opens (matching sets, whose images come free with the set inventory) — no need to tap 🖼 Get part images. Runs once per list when a Rebrickable key is set; the manual button stays as a fallback.",
+    "Fixed: parts pushed to a want list from a MOC's parts list (and a set's 'Add missing') now carry their image + Rebrickable colour id, so they arrive WITH a picture instead of a blank thumbnail. This was why 'Get part images' looked like it did nothing — MOC-sourced rows had no colour id to fetch a colour-correct image from.",
+  ]],
+  ["0.49.0", "2026-06-24", [
+    "WTB want-list parts list reworked to match a set's parts list. Replaced the To Get / Got It sections with a single grouped list plus a filter bar: a text filter (name / number / colour), a Hide purchased toggle (hides parts you already have ≥ qty), a Group: Colour ↔ Group: Part toggle (persists), an ⌄/⌃ All expand/collapse-all chip, and a ↺ Reset filter chip. Typing in the filter auto-expands every group. Clear purchased replaces Clear Got It.",
+  ]],
   ["0.48.0", "2026-06-22", [
     "Loose / PAB buys can now itemise parts. Open a Loose buy → Loose parts → + Add part: find it by 📷 scan, part number, or Rebrickable description search (same finder as the want list), optionally pick its colour, then record qty (plain text box, no stepper), price paid, and any per-part shipping.",
     "Per-part unit price is computed live: (price paid + part shipping) ÷ qty — so you can compare what each piece actually cost across different AliExpress sellers / PAB.",
@@ -708,13 +721,17 @@ async function rbFetch(url) {
 // Guarded by count so a server that ignores the param (returning the whole catalogue) is rejected.
 async function resolveRbPart(pn) {
   try {
-    return await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/`);
+    const r = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/`);
+    if (r) partDbPut({ partNum: r.part_num, name: r.name, img: r.part_img_url });
+    return r;
   } catch (e) {
     if (e.status !== 404) throw e;
     try {
       const j = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/?bricklink_id=${encodeURIComponent(pn)}&page_size=5`);
       if (Array.isArray(j.results) && j.results.length && (j.count == null || j.count <= 5)) {
-        return j.results.find(r => r.external_ids?.BrickLink?.includes(pn)) || j.results[0];
+        const r = j.results.find(r => r.external_ids?.BrickLink?.includes(pn)) || j.results[0];
+        if (r) partDbPut({ partNum: r.part_num, name: r.name, img: r.part_img_url });
+        return r;
       }
     } catch {}
     return null;
@@ -732,6 +749,8 @@ async function fetchPartColors(partNum) {
   const cj = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/colors/?page_size=200`);
   const list = (cj.results || []).map(c => ({ color_id: c.color_id, color_name: c.color_name, part_img_url: c.part_img_url, num_sets: c.num_sets || 0 }))
     .sort((a, b) => (b.num_sets || 0) - (a.num_sets || 0));
+  // feed the catalog so these colour-correct images are reusable later without a refetch
+  partDbPutMany(list.map(c => ({ partNum: pn, name: resolved?.name, colorID: c.color_id, colorName: c.color_name, colorImg: c.part_img_url })));
   _partColorCache.set(ck, list);
   return list;
 }
@@ -739,6 +758,9 @@ async function fetchPartColors(partNum) {
 // part in its default colour, which is why list thumbnails didn't match the real colour). Matches by
 // stored rebrickable colour id first, else by colour name. Returns null if it can't be resolved.
 async function colorImgFor(partNum, { rbColorId, colorName } = {}) {
+  // catalog-first: a colour we've already seen (from any fetched set or colour lookup) is instant + offline.
+  const local = partDbColorImg(partNum, { rbColorId, colorName });
+  if (local?.img) return local;
   try {
     const cs = await fetchPartColors(partNum);
     let c = null;
@@ -746,6 +768,43 @@ async function colorImgFor(partNum, { rbColorId, colorName } = {}) {
     if (!c && colorName) c = cs.find(x => (x.color_name || "").toLowerCase() === colorName.toLowerCase());
     if (c && c.part_img_url) return { img: c.part_img_url, rbColorId: c.color_id, colorName: c.color_name };
   } catch {}
+  return null;
+}
+
+// ---------- local part catalog (bt:parts) ----------
+// Grows from every set fetch + Rebrickable part/colour resolve, so re-adding a part or colour you
+// already own is instant, offline-safe and never blank — Rebrickable is only called for parts not yet
+// seen. Keyed by exact part number; per-colour entries hold the colour-CORRECT image. Stores text +
+// image URLs only (no blobs), so backups stay small. Shape: { [partNum]: { num, name, img, colors:{ [colorId]: { name, img } } } }
+let _partDb;
+const partDbAll = () => (_partDb ||= load("bt:parts", {}));
+const partDbGet = pn => pn ? partDbAll()[pn] || null : null;
+// Merge many parts (+ optional colour images) into the catalog in ONE write. Only fills blanks
+// (never overwrites a known name/image), so it's safe to call on every fetch.
+function partDbPutMany(items) {
+  const db = partDbAll(); let changed = false;
+  for (const it of (items || [])) {
+    if (!it || !it.partNum) continue;
+    const e = db[it.partNum] || { num: it.partNum, name: "", img: null, colors: {} };
+    let ec = false;
+    if (it.name && !e.name) { e.name = it.name; ec = true; }
+    if (it.img && !e.img) { e.img = it.img; ec = true; }
+    if (it.colorID != null && it.colorID !== "") {
+      const k = String(it.colorID), cur = e.colors[k] || {};
+      if (it.colorImg && !cur.img) { cur.img = it.colorImg; ec = true; }
+      if (it.colorName && !cur.name) { cur.name = it.colorName; ec = true; }
+      if (ec) e.colors[k] = cur;
+    }
+    if (ec) { db[it.partNum] = e; changed = true; }
+  }
+  if (changed) save("bt:parts", db);
+}
+const partDbPut = it => partDbPutMany([it]);
+// Colour-correct image straight from the catalog (no network). null if the part/colour isn't cached.
+function partDbColorImg(partNum, { rbColorId, colorName } = {}) {
+  const e = partDbGet(partNum); if (!e) return null;
+  if (rbColorId != null && rbColorId !== "") { const c = e.colors[String(rbColorId)]; if (c?.img) return { img: c.img, rbColorId: String(rbColorId), colorName: c.name || colorName }; }
+  if (colorName) for (const [cid, c] of Object.entries(e.colors)) if (c.img && (c.name || "").toLowerCase() === colorName.toLowerCase()) return { img: c.img, rbColorId: cid, colorName: c.name };
   return null;
 }
 
@@ -794,6 +853,9 @@ async function fetchFullSet(setNum, onProgress) {
     colorID: r.color?.id, colorName: r.color?.name,
     img: r.part?.part_img_url, qtyNeeded: r.quantity, qtyFound: 0, isSpare: !!r.is_spare,
   }));
+  // feed the local catalog: a set part's img is already the colour-correct image for its colour, so
+  // every fetched set makes its parts reusable (instant + offline) when adding them to want lists later
+  partDbPutMany(parts.map(p => ({ partNum: p.partNumber, name: p.partName, colorID: p.colorID, colorName: p.colorName, colorImg: p.img })));
   let minifigs = [];
   try { minifigs = await fetchSetMinifigs(setNum, onProgress); } catch { minifigs = []; }
   return { meta, parts, minifigs };
@@ -1313,6 +1375,20 @@ function App() {
     }
     return idx;
   });
+  // One-time: seed the local part catalog (bt:parts) from sets fetched BEFORE the catalog existed, so
+  // adding a part you already own is instant/offline without first re-opening every set. New fetches +
+  // opening a set keep it topped up; idempotent (only fills blanks). Deferred so it never janks boot.
+  useEffect(() => {
+    if (load("bt:partsBackfillV1", false)) return;
+    const id = setTimeout(() => {
+      for (const e of load("bt:index", [])) {
+        const rec = load(`bt:set:${e.setNum}`, null);
+        if (rec?.parts) partDbPutMany(rec.parts.map(p => ({ partNum: p.partNumber, name: p.partName, colorID: p.colorID, colorName: p.colorName, colorImg: p.img })));
+      }
+      save("bt:partsBackfillV1", true);
+    }, 400);
+    return () => clearTimeout(id);
+  }, []);
   const [merch, setMerch] = useState(() => load("bt:merch", []));
   const saveMerchList = next => { setMerch(next); save("bt:merch", next); };
   const upsertMerch = m => saveMerchList(merch.some(x => x.id === m.id) ? merch.map(x => x.id === m.id ? m : x) : [...merch, m]);
@@ -1939,7 +2015,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     const picks = [...sel].map(i => wanted[i]).filter(Boolean);
     if (!picks.length) return;
     const parts = picks.map(w => { const short = Math.max(0, (w.qty || 0) - haveFor(w.partNum));
-      return { partNum: w.partNum, name: w.name, colorName: w.colorName, blColorId: w.blColorId, qty: short > 0 ? short : (w.qty || 1) }; });
+      return { partNum: w.partNum, name: w.name, colorName: w.colorName, blColorId: w.blColorId, rbColorId: w.rbColorId, img: w.img, qty: short > 0 ? short : (w.qty || 1) }; });
     pushMissingToWtb?.({ linkType: "moc", linkId: moc.id, name: moc.name, parts });
     setSel(new Set());
     setWtbMsg(`Added ${picks.length} part${picks.length === 1 ? "" : "s"} to a want list.`);
@@ -1961,6 +2037,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
           const ci = await colorImgFor(w.partNum, { rbColorId: w.rbColorId, colorName: w.colorName });
           if (ci?.img) { next[i] = { ...w, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || w.colorName }; changed++; continue; }
         }
+        const le = partDbGet(w.partNum); if (le?.img) { next[i] = { ...w, img: le.img, name: w.name || le.name }; changed++; continue; }
         const p = await resolveRbPart(w.partNum);
         if (p?.part_img_url) { next[i] = { ...w, img: p.part_img_url, name: w.name || p.name }; changed++; }
       } catch {}
@@ -2420,12 +2497,15 @@ function WtbAddPart({ onAdd, linkTargets }) {
   const search = async () => {
     const ql = q.trim();
     if (!ql) return;
-    if (!getKey().trim()) { setMsg("Add your Rebrickable key in Settings first."); return; }
     setBusy(true); setMsg(""); setRes(null);
+    const isNum = /^[A-Za-z0-9.\-]+$/.test(ql) && /\d/.test(ql);
+    // catalog-first: a part number you already own (from any fetched set) resolves instantly + offline
+    if (isNum) { const le = partDbGet(ql); if (le && (le.img || le.name)) { setRes([{ part_num: le.num, name: le.name, part_img_url: le.img }]); setBusy(false); return; } }
+    if (!getKey().trim()) { setMsg("Add your Rebrickable key in Settings first."); setBusy(false); return; }
     try {
       // a bare part number resolves directly (also catches printed/BrickLink ids); otherwise search by text
       let results = [];
-      if (/^[A-Za-z0-9.\-]+$/.test(ql) && /\d/.test(ql)) { const p = await resolveRbPart(ql); if (p) results = [p]; }
+      if (isNum) { const p = await resolveRbPart(ql); if (p) results = [p]; }
       if (!results.length) { const j = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/?search=${encodeURIComponent(ql)}&page_size=24`); results = j.results || []; }
       setRes(results);
       if (!results.length) setMsg("No parts matched.");
@@ -2612,13 +2692,17 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
   const [name, setName] = useState(list.name || "");
   const [confirmDel, setConfirmDel] = useState(false);
   const [open, setOpen] = useState(() => new Set());
-  const [secOpen, setSecOpen] = useState(() => new Set(["toget"])); // To Get open, Got It collapsed
+  // set-style parts filter (mirrors the set parts list): text filter, hide-purchased, group by
+  // colour ↔ part type, expand/collapse all, reset filter.
+  const [q, setQ] = useState("");
+  const [hideGot, setHideGot] = useState(false);
+  const [groupMode, setGroupModeRaw] = useState(() => load("bt:wtbpartgroup", "color")); // color | type
+  const setGroupMode = v => { setGroupModeRaw(v); save("bt:wtbpartgroup", v); };
   const [viewPart, setViewPart] = useState(null); // tap thumbnail → enlarge
   const [editPart, setEditPart] = useState(null);  // swipe Edit → colour/qty/For sheet
   const [imgBusy, setImgBusy] = useState(false);
   const [imgMsg, setImgMsg] = useState("");
   const toggle = g => setOpen(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
-  const toggleSec = s => setSecOpen(prev => { const n = new Set(prev); n.has(s) ? n.delete(s) : n.add(s); return n; });
   const parts = list.parts || [];
   const haveOf = p => p.have != null ? p.have : (p.got ? (p.qty || 1) : 0);
   const s = wtbStats(list);
@@ -2636,61 +2720,80 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
     if (p.forType === "set") { const e = index.find(x => x.setNum === p.forId); return e ? `🧱 ${e.name}` : null; }
     return null;
   };
-  // pull colour-correct Rebrickable images for any line missing one (item 4)
-  const getImages = async () => {
-    if (!getKey().trim()) { setImgMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setImgMsg(""), 3500); return; }
+  // pull colour-correct Rebrickable images for any line missing one (item 4). `silent` = auto-run
+  // on open (no toast / no "key first" nag — just fill what it can in the background).
+  const getImages = async (silent = false) => {
+    if (!getKey().trim()) { if (!silent) { setImgMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setImgMsg(""), 3500); } return; }
     setImgBusy(true);
     const next = [...parts]; let changed = 0;
     for (let i = 0; i < next.length; i++) { const p = next[i]; if (p.img || !p.partNum) continue;
       try {
         if (p.colorName || p.rbColorId != null) { const ci = await colorImgFor(p.partNum, { rbColorId: p.rbColorId, colorName: p.colorName });
           if (ci?.img) { next[i] = { ...p, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || p.colorName }; changed++; continue; } }
+        const le = partDbGet(p.partNum); if (le?.img) { next[i] = { ...p, img: le.img, name: p.name || le.name }; changed++; continue; }
         const r = await resolveRbPart(p.partNum); if (r?.part_img_url) { next[i] = { ...p, img: r.part_img_url, name: p.name || r.name }; changed++; }
       } catch {}
     }
     if (changed) onUpdate({ ...list, parts: next });
     setImgBusy(false);
-    setImgMsg(changed ? `Fetched ${changed} image${changed === 1 ? "" : "s"}.` : "No new images found.");
-    setTimeout(() => setImgMsg(""), 3500);
+    if (!silent) { setImgMsg(changed ? `Fetched ${changed} image${changed === 1 ? "" : "s"}.` : "No new images found."); setTimeout(() => setImgMsg(""), 3500); }
   };
-  // one part row (used in both sections); tap thumbnail = enlarge, tap name = toggle got (moves it
-  // between sections), type the got count, swipe for Edit / Delete.
+  // Auto-fetch missing images when the list opens — same effect as a set's parts (whose images come
+  // free with the inventory). Runs once per list (a ref guards against the onUpdate re-render loop),
+  // only when a key is set and something is actually missing an image.
+  const autoImgDone = useRef("");
+  useEffect(() => {
+    if (autoImgDone.current === list.id) return;
+    if (!getKey().trim()) return;
+    if (!parts.some(p => !p.img && p.partNum)) return;
+    autoImgDone.current = list.id;
+    getImages(true);
+  }, [list.id, parts]);
+  // one part row — same look as a set's parts list (PartRow): tappable thumbnail to enlarge, tap the
+  // name area to toggle got full/none, horizontal − / got/needed / + stepper, green border + dimmed
+  // when complete. Swipe left for Edit (colour/qty/For) + Delete.
   const renderRow = p => {
     const qty = p.qty || 1, have = Math.min(haveOf(p), qty), done = have >= qty, fl = forLabel(p);
+    const border = done ? "var(--green)" : "var(--line)";
     return html`<${SwipeRow} key=${p.id} onEdit=${() => setEditPart(p)} onDelete=${() => delPart(p.id)}>
-      <div class="row" style=${`gap:8px;align-items:flex-start;background:var(--panel);border:1px solid ${done ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 9px`}>
+      <div class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;opacity:${done ? .65 : 1}`}>
         <span style="flex-shrink:0;cursor:pointer" onClick=${() => setViewPart({ img: imgFor(p), partName: p.name || p.partNum, partNumber: p.partNum, colorName: p.colorName || "" })}>
           <${Thumb} src=${imgFor(p)} size=${40} />
         </span>
-        <div style="flex:1;min-width:0">
-          <div class="clamp2" style=${`font-size:13px;font-weight:600;line-height:1.25;cursor:pointer;${done ? "text-decoration:line-through" : ""}`}
-            onClick=${() => onSetHave(list, p, done ? 0 : qty)}>${p.name || p.partNum || "(part)"}</div>
+        <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => onSetHave(list, p, done ? 0 : qty)}>
+          <div class="clamp2" style="font-size:13px;line-height:1.25">${p.name || p.partNum || "(part)"}</div>
           <div class="dim mono" style="font-size:11px">${p.colorName || "—"} · ${p.partNum || "?"}${p.note ? ` · ${p.note}` : ""}</div>
-          <div style="display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap">
-            <button class="step" style="width:28px;height:28px" disabled=${have === 0} onClick=${() => onSetHave(list, p, have - 1)}>−</button>
-            <input inputmode="numeric" value=${String(have)} onInput=${e => onSetHave(list, p, parseInt(e.target.value.replace(/[^0-9]/g, "")) || 0)}
-              style="width:42px;height:28px;text-align:center;font-weight:700;padding:0" />
-            <button class="step plus" style="width:28px;height:28px" disabled=${done} onClick=${() => onSetHave(list, p, have + 1)}>+</button>
-            <span class="mono" style=${`font-size:11px;font-weight:700;color:${done ? "var(--green)" : "var(--dim)"}`}>${qty} needed / ${have} got</span>
-          </div>
-          ${fl && html`<div style="margin-top:4px"><span class="badge" style="font-size:10px;color:var(--blue);border:1px solid var(--blue)">For: ${fl}</span></div>`}
-          ${(() => { const pt = resolveTags(tags, partTagIds(p.partNum)); return pt.length ? html`<div style="margin-top:4px"><${TagChips} tags=${pt} small /></div>` : null; })()}
+          ${fl && html`<div style="margin-top:3px"><span class="badge" style="font-size:10px;color:var(--blue);border:1px solid var(--blue)">For: ${fl}</span></div>`}
+          ${(() => { const pt = resolveTags(tags, partTagIds(p.partNum)); return pt.length ? html`<div style="margin-top:3px"><${TagChips} tags=${pt} small /></div>` : null; })()}
         </div>
+        <button class="step" style="width:34px" disabled=${have === 0} onClick=${() => onSetHave(list, p, have - 1)}>−</button>
+        <div class="mono" style=${`font-size:14px;font-weight:700;min-width:38px;text-align:center;color:${done ? "var(--green)" : "var(--text)"}`}>${have}/${qty}</div>
+        <button class="step plus" style="width:34px" disabled=${done} onClick=${() => onSetHave(list, p, have + 1)}>+</button>
       </div>
     </${SwipeRow}>`;
   };
-  // colour-grouped accordion for a set of parts (reused by both sections)
-  const colorGroups = items => {
+  // set-style filter + grouping: text filter (name/number/colour), optional hide-purchased, then
+  // bucket by colour or part type. Typing in the filter auto-expands every group (like the set list).
+  const ql = q.trim().toLowerCase();
+  const visible = parts.filter(p =>
+    (!hideGot || haveOf(p) < (p.qty || 1)) &&
+    (!ql || (p.name || "").toLowerCase().includes(ql) || (p.partNum || "").toLowerCase().includes(ql) || (p.colorName || "").toLowerCase().includes(ql)));
+  const groups = (() => {
     const m = new Map();
-    for (const p of items) { const g = colorGroup(p.colorName); if (!m.has(g)) m.set(g, []); m.get(g).push(p); }
-    return [...m.entries()].sort((a, b) => groupRank(a[0]).localeCompare(groupRank(b[0])));
-  };
-  const renderGroups = (items, keyPrefix) => colorGroups(items).map(([g, gi]) => {
-    const k = keyPrefix + g, gOpen = open.has(k);
+    for (const p of visible) { const g = groupMode === "type" ? partType(p.name, p.partNum) : colorGroup(p.colorName); if (!m.has(g)) m.set(g, []); m.get(g).push(p); }
+    const rank = groupMode === "type" ? typeRank : groupRank;
+    return [...m.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
+  })();
+  const allOpen = groups.length > 0 && groups.every(([g]) => open.has(g));
+  const toggleAll = () => setOpen(allOpen ? new Set() : new Set(groups.map(([g]) => g)));
+  const resetFilter = () => { setQ(""); setHideGot(false); };
+  const gotCount = parts.filter(p => haveOf(p) >= (p.qty || 1)).length;
+  const renderGroups = entries => entries.map(([g, gi]) => {
+    const gOpen = ql.length > 0 || open.has(g);
     const gHave = gi.reduce((a, p) => a + Math.min(haveOf(p), p.qty || 1), 0);
     const gNeed = gi.reduce((a, p) => a + (p.qty || 1), 0);
-    return html`<div key=${k} style="margin-bottom:6px">
-      <button class="row" onClick=${() => toggle(k)}
+    return html`<div key=${g} style="margin-bottom:6px">
+      <button class="row" onClick=${() => toggle(g)}
         style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;color:var(--text);justify-content:space-between">
         <span class="label" style="margin:0">${g} · ${gi.length}</span>
         <span class="row" style="gap:10px">
@@ -2701,21 +2804,6 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
       ${gOpen && html`<div style="margin-top:6px">${gi.map(renderRow)}</div>`}
     </div>`;
   });
-  const toGet = parts.filter(p => haveOf(p) < (p.qty || 1));
-  const gotIt = parts.filter(p => haveOf(p) >= (p.qty || 1));
-  const section = (id, title, items, hint) => {
-    const o = secOpen.has(id);
-    return html`<div key=${id} style="margin-bottom:10px">
-      <button class="row" onClick=${() => toggleSec(id)}
-        style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 13px;color:var(--text);justify-content:space-between">
-        <span style="font-weight:800;font-size:15px">${title} · ${items.length}</span>
-        <span class="dim">${o ? "▾" : "▸"}</span>
-      </button>
-      ${o && html`<div style="margin-top:8px">
-        ${items.length === 0 ? html`<div class="dim" style="font-size:12px;padding:4px 2px 8px">${hint}</div>` : renderGroups(items, id)}
-      </div>`}
-    </div>`;
-  };
   return html`<div class="navin" key="wtb-detail">
     <${Header} title=${list.name || "Want list"} sub=${`${s.open} to get · ${s.total} parts · ${s.pct}% got`} onBack=${onBack}
       right=${html`<button class="step" style="width:40px" onClick=${() => setRenaming(v => !v)}>✏️</button>`} />
@@ -2729,13 +2817,23 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
     </div>`}
     ${info.kind === "set" && html`<div class="dim" style="font-size:12px;margin:0 2px 10px">Completing a part (have = qty) ${syncMode === "auto" ? "also marks it found in the linked set" : syncMode === "ask" ? "asks whether to also mark it found in the linked set" : "just marks it off here (sync off — change in Settings)"}.</div>`}
     <${WtbAddPart} onAdd=${addPart} linkTargets=${linkTargets} />
-    ${parts.length > 0 && parts.some(p => !p.img) && html`<button class="ghost" style="margin-top:8px;padding:9px" disabled=${imgBusy} onClick=${getImages}>${imgBusy ? "Fetching images…" : "🖼 Get part images"}</button>`}
+    ${parts.length > 0 && parts.some(p => !p.img) && html`<button class="ghost" style="margin-top:8px;padding:9px" disabled=${imgBusy} onClick=${() => getImages()}>${imgBusy ? "Fetching images…" : "🖼 Get part images"}</button>`}
     ${imgMsg && html`<div class="dim" style="font-size:12px;margin-top:4px">${imgMsg}</div>`}
     <div style="height:12px"></div>
     ${parts.length === 0 && html`<div class="card dim" style="text-align:center;padding:20px">No parts yet — add above, or push a set/MOC's shortfall from its detail page.</div>`}
-    ${parts.length > 0 && section("toget", "To Get", toGet, "Nothing left to get — all parts are in Got It.")}
-    ${parts.length > 0 && section("gotit", "Got It", gotIt, "Mark a part's got-count up to its needed qty (tap the name, or type / step the count) and it moves here.")}
-    ${gotIt.length > 0 && html`<button class="ghost" style="margin-top:4px" onClick=${() => { if (confirm("Remove all got parts from this list?")) onUpdate({ ...list, parts: toGet }); }}>Clear Got It</button>`}
+    ${parts.length > 0 && html`<div class="card" style="padding:12px">
+      <input placeholder="Filter parts (name / number / colour)" value=${q} onInput=${e => setQ(e.target.value)} />
+      <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
+        <${Chip} label="Hide purchased" color="var(--green)" active=${hideGot} onClick=${() => setHideGot(v => !v)} />
+        <${Chip} label=${groupMode === "type" ? "Group: Part" : "Group: Colour"} color="var(--blue)" active
+          onClick=${() => setGroupMode(groupMode === "type" ? "color" : "type")} />
+        <${Chip} label=${allOpen ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false} onClick=${toggleAll} />
+        <${Chip} label="↺ Reset filter" color="var(--red)" active=${false} onClick=${resetFilter} />
+      </div>
+    </div>`}
+    ${parts.length > 0 && groups.length === 0 && html`<div class="card dim" style="text-align:center;padding:16px;font-size:13px">No parts match the filter.</div>`}
+    ${parts.length > 0 && renderGroups(groups)}
+    ${gotCount > 0 && html`<button class="ghost" style="margin-top:4px" onClick=${() => { if (confirm("Remove all purchased parts from this list?")) onUpdate({ ...list, parts: parts.filter(p => haveOf(p) < (p.qty || 1)) }); }}>Clear purchased (${gotCount})</button>`}
     <div style="height:12px"></div>
     ${!confirmDel
       ? html`<button class="ghost" style="color:var(--red);border-color:var(--red)" onClick=${() => setConfirmDel(true)}>Delete list…</button>`
@@ -3443,6 +3541,12 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
 // ---------- Set detail ----------
 function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack, onDelete }) {
   const [rec, setRec] = useState(() => load(`bt:set:${setNum}`, null));
+  // top up the local part catalog from this set's parts whenever it's opened (covers sets fetched
+  // before the catalog existed, and restored backups) — idempotent, only fills blanks
+  useEffect(() => {
+    const r = load(`bt:set:${setNum}`, null);
+    if (r?.parts) partDbPutMany(r.parts.map(p => ({ partNum: p.partNumber, name: p.partName, colorID: p.colorID, colorName: p.colorName, colorImg: p.img })));
+  }, [setNum]);
   const [tagPick, setTagPick] = useState(false);
   const [recatTick, setRecatTick] = useState(0); // bump to recompute type grouping after a recategorise
   const [q, setQ] = useState("");
@@ -3966,7 +4070,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     <div style="height:8px"></div>
     ${(() => {
       const missing = rec.parts.filter(p => !isExcludedPart(p) && !p.isSpare && p.qtyNeeded > p.qtyFound)
-        .map(p => ({ partNum: p.partNumber, name: p.partName, colorName: p.colorName, img: p.img, qty: p.qtyNeeded - p.qtyFound }));
+        .map(p => ({ partNum: p.partNumber, name: p.partName, colorName: p.colorName, rbColorId: p.colorID, img: p.img, qty: p.qtyNeeded - p.qtyFound }));
       const linked = wtbLists.find(l => l.linkType === "set" && l.linkId === setNum);
       if (!missing.length) return null;
       return html`<button class="ghost blue" style="border-color:var(--blue);color:var(--blue);margin-bottom:8px"

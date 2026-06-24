@@ -9,6 +9,36 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.51.0 — 2026-06-24
+
+- **Local part catalog (cache-first).** Every set you fetch now feeds a local parts database (`bt:parts`): part **name** + the **colour-correct image** for each colour seen.
+  - **Adding a part or a set whose parts you already own is now instant and offline** — no blank / wrong-colour thumbnails — because adds read the catalog first and only call Rebrickable for parts never seen before.
+  - **WTB "Add a part" by number** resolves straight from the catalog when you already own that part (no key / no network). Description search + brand-new parts still hit Rebrickable, and get **cached on the way through**.
+  - The catalog **back-fills once** from sets fetched before this version, and **tops up** whenever you open a set — so older and restored sets count too.
+  - Stores **text + image URLs only** (no image blobs), so backups stay small.
+
+-----
+
+## v0.50.0 — 2026-06-24
+
+- **WTB part rows now match a set's parts list exactly.** Tappable thumbnail to enlarge, tap the name to toggle got, and a horizontal **− / got/needed / +** stepper — replacing the typeable got box and the "N needed / M got" text. Complete rows go **green-bordered + dimmed**, same as a set.
+- **WTB images fetch automatically on open** (matching sets, whose images come free with the set inventory) — no need to tap **🖼 Get part images**. Runs once per list when a Rebrickable key is set; the manual button remains as a fallback.
+- **Fixed: parts pushed from a MOC's parts list (and a set's "Add missing") now carry their image + Rebrickable colour id.** They arrive **with** a picture instead of a blank thumbnail. This was the real reason "Get part images" looked broken on MOC-linked lists — those rows had no Rebrickable colour id to fetch a colour-correct image from.
+
+-----
+
+## v0.49.0 — 2026-06-24
+
+- **WTB parts list now works like a set's parts list.** Replaced the **To Get / Got It** sections with a single grouped list plus a **filter bar**:
+  - a **text filter** (name / number / colour),
+  - a **Hide purchased** toggle (hides parts where have ≥ qty),
+  - a **Group: Colour ↔ Group: Part** toggle (persists, `bt:wtbpartgroup`),
+  - an **⌄/⌃ All** expand-all / collapse-all chip,
+  - a **↺ Reset filter** chip (clears the text filter + Hide purchased).
+- Typing in the filter **auto-expands** every group. **Clear purchased** replaces the old **Clear Got It** button.
+
+-----
+
 ## v0.48.0 — 2026-06-22
 
 - **Loose / PAB buys can itemise parts.** Open a **Loose** buy → **Loose parts** → **+ Add part**: find a part by **📷 scan**, **part number**, or **Rebrickable description search** (the same finder as the want list), optionally pick its **colour**, then record **qty** (a plain text box — no stepper), **price paid**, and any **per-part shipping**.
