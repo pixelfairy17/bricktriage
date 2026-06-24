@@ -9,6 +9,16 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.51.0 — 2026-06-24
+
+- **Local part catalog (cache-first).** Every set you fetch now feeds a local parts database (`bt:parts`): part **name** + the **colour-correct image** for each colour seen.
+  - **Adding a part or a set whose parts you already own is now instant and offline** — no blank / wrong-colour thumbnails — because adds read the catalog first and only call Rebrickable for parts never seen before.
+  - **WTB "Add a part" by number** resolves straight from the catalog when you already own that part (no key / no network). Description search + brand-new parts still hit Rebrickable, and get **cached on the way through**.
+  - The catalog **back-fills once** from sets fetched before this version, and **tops up** whenever you open a set — so older and restored sets count too.
+  - Stores **text + image URLs only** (no image blobs), so backups stay small.
+
+-----
+
 ## v0.50.0 — 2026-06-24
 
 - **WTB part rows now match a set's parts list exactly.** Tappable thumbnail to enlarge, tap the name to toggle got, and a horizontal **− / got/needed / +** stepper — replacing the typeable got box and the "N needed / M got" text. Complete rows go **green-bordered + dimmed**, same as a set.

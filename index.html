@@ -89,8 +89,13 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.50.0";
+const APP_VERSION = "0.51.0";
 const CHANGELOG = [
+  ["0.51.0", "2026-06-24", [
+    "Local part catalog (cache-first): every set you fetch now feeds a local parts database (bt:parts) — part name + the colour-correct image per colour. Adding a part or set whose parts you already own is now instant and works offline, with no blank/wrong-colour thumbnails, because it reads the catalog first and only calls Rebrickable for parts it has never seen.",
+    "WTB 'Add a part' by number resolves instantly from the catalog when you already own that part (no key / no network needed); description search and brand-new parts still use Rebrickable (and get cached on the way through).",
+    "The catalog also back-fills once from sets you fetched before this version, and tops up whenever you open a set — so older and restored sets count too. Stores text + image URLs only (no image blobs), so backups stay small.",
+  ]],
   ["0.50.0", "2026-06-24", [
     "WTB part rows now look exactly like a set's parts list: tappable thumbnail to enlarge, tap the name to toggle got, and a horizontal − / got/needed / + stepper (replacing the typeable got box + 'N needed / M got' text). Complete rows go green-bordered and dimmed, same as a set.",
     "WTB images now fetch automatically when a list opens (matching sets, whose images come free with the set inventory) — no need to tap 🖼 Get part images. Runs once per list when a Rebrickable key is set; the manual button stays as a fallback.",
@@ -716,13 +721,17 @@ async function rbFetch(url) {
 // Guarded by count so a server that ignores the param (returning the whole catalogue) is rejected.
 async function resolveRbPart(pn) {
   try {
-    return await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/`);
+    const r = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/`);
+    if (r) partDbPut({ partNum: r.part_num, name: r.name, img: r.part_img_url });
+    return r;
   } catch (e) {
     if (e.status !== 404) throw e;
     try {
       const j = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/?bricklink_id=${encodeURIComponent(pn)}&page_size=5`);
       if (Array.isArray(j.results) && j.results.length && (j.count == null || j.count <= 5)) {
-        return j.results.find(r => r.external_ids?.BrickLink?.includes(pn)) || j.results[0];
+        const r = j.results.find(r => r.external_ids?.BrickLink?.includes(pn)) || j.results[0];
+        if (r) partDbPut({ partNum: r.part_num, name: r.name, img: r.part_img_url });
+        return r;
       }
     } catch {}
     return null;
@@ -740,6 +749,8 @@ async function fetchPartColors(partNum) {
   const cj = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/${encodeURIComponent(pn)}/colors/?page_size=200`);
   const list = (cj.results || []).map(c => ({ color_id: c.color_id, color_name: c.color_name, part_img_url: c.part_img_url, num_sets: c.num_sets || 0 }))
     .sort((a, b) => (b.num_sets || 0) - (a.num_sets || 0));
+  // feed the catalog so these colour-correct images are reusable later without a refetch
+  partDbPutMany(list.map(c => ({ partNum: pn, name: resolved?.name, colorID: c.color_id, colorName: c.color_name, colorImg: c.part_img_url })));
   _partColorCache.set(ck, list);
   return list;
 }
@@ -747,6 +758,9 @@ async function fetchPartColors(partNum) {
 // part in its default colour, which is why list thumbnails didn't match the real colour). Matches by
 // stored rebrickable colour id first, else by colour name. Returns null if it can't be resolved.
 async function colorImgFor(partNum, { rbColorId, colorName } = {}) {
+  // catalog-first: a colour we've already seen (from any fetched set or colour lookup) is instant + offline.
+  const local = partDbColorImg(partNum, { rbColorId, colorName });
+  if (local?.img) return local;
   try {
     const cs = await fetchPartColors(partNum);
     let c = null;
@@ -754,6 +768,43 @@ async function colorImgFor(partNum, { rbColorId, colorName } = {}) {
     if (!c && colorName) c = cs.find(x => (x.color_name || "").toLowerCase() === colorName.toLowerCase());
     if (c && c.part_img_url) return { img: c.part_img_url, rbColorId: c.color_id, colorName: c.color_name };
   } catch {}
+  return null;
+}
+
+// ---------- local part catalog (bt:parts) ----------
+// Grows from every set fetch + Rebrickable part/colour resolve, so re-adding a part or colour you
+// already own is instant, offline-safe and never blank — Rebrickable is only called for parts not yet
+// seen. Keyed by exact part number; per-colour entries hold the colour-CORRECT image. Stores text +
+// image URLs only (no blobs), so backups stay small. Shape: { [partNum]: { num, name, img, colors:{ [colorId]: { name, img } } } }
+let _partDb;
+const partDbAll = () => (_partDb ||= load("bt:parts", {}));
+const partDbGet = pn => pn ? partDbAll()[pn] || null : null;
+// Merge many parts (+ optional colour images) into the catalog in ONE write. Only fills blanks
+// (never overwrites a known name/image), so it's safe to call on every fetch.
+function partDbPutMany(items) {
+  const db = partDbAll(); let changed = false;
+  for (const it of (items || [])) {
+    if (!it || !it.partNum) continue;
+    const e = db[it.partNum] || { num: it.partNum, name: "", img: null, colors: {} };
+    let ec = false;
+    if (it.name && !e.name) { e.name = it.name; ec = true; }
+    if (it.img && !e.img) { e.img = it.img; ec = true; }
+    if (it.colorID != null && it.colorID !== "") {
+      const k = String(it.colorID), cur = e.colors[k] || {};
+      if (it.colorImg && !cur.img) { cur.img = it.colorImg; ec = true; }
+      if (it.colorName && !cur.name) { cur.name = it.colorName; ec = true; }
+      if (ec) e.colors[k] = cur;
+    }
+    if (ec) { db[it.partNum] = e; changed = true; }
+  }
+  if (changed) save("bt:parts", db);
+}
+const partDbPut = it => partDbPutMany([it]);
+// Colour-correct image straight from the catalog (no network). null if the part/colour isn't cached.
+function partDbColorImg(partNum, { rbColorId, colorName } = {}) {
+  const e = partDbGet(partNum); if (!e) return null;
+  if (rbColorId != null && rbColorId !== "") { const c = e.colors[String(rbColorId)]; if (c?.img) return { img: c.img, rbColorId: String(rbColorId), colorName: c.name || colorName }; }
+  if (colorName) for (const [cid, c] of Object.entries(e.colors)) if (c.img && (c.name || "").toLowerCase() === colorName.toLowerCase()) return { img: c.img, rbColorId: cid, colorName: c.name };
   return null;
 }
 
@@ -802,6 +853,9 @@ async function fetchFullSet(setNum, onProgress) {
     colorID: r.color?.id, colorName: r.color?.name,
     img: r.part?.part_img_url, qtyNeeded: r.quantity, qtyFound: 0, isSpare: !!r.is_spare,
   }));
+  // feed the local catalog: a set part's img is already the colour-correct image for its colour, so
+  // every fetched set makes its parts reusable (instant + offline) when adding them to want lists later
+  partDbPutMany(parts.map(p => ({ partNum: p.partNumber, name: p.partName, colorID: p.colorID, colorName: p.colorName, colorImg: p.img })));
   let minifigs = [];
   try { minifigs = await fetchSetMinifigs(setNum, onProgress); } catch { minifigs = []; }
   return { meta, parts, minifigs };
@@ -1321,6 +1375,20 @@ function App() {
     }
     return idx;
   });
+  // One-time: seed the local part catalog (bt:parts) from sets fetched BEFORE the catalog existed, so
+  // adding a part you already own is instant/offline without first re-opening every set. New fetches +
+  // opening a set keep it topped up; idempotent (only fills blanks). Deferred so it never janks boot.
+  useEffect(() => {
+    if (load("bt:partsBackfillV1", false)) return;
+    const id = setTimeout(() => {
+      for (const e of load("bt:index", [])) {
+        const rec = load(`bt:set:${e.setNum}`, null);
+        if (rec?.parts) partDbPutMany(rec.parts.map(p => ({ partNum: p.partNumber, name: p.partName, colorID: p.colorID, colorName: p.colorName, colorImg: p.img })));
+      }
+      save("bt:partsBackfillV1", true);
+    }, 400);
+    return () => clearTimeout(id);
+  }, []);
   const [merch, setMerch] = useState(() => load("bt:merch", []));
   const saveMerchList = next => { setMerch(next); save("bt:merch", next); };
   const upsertMerch = m => saveMerchList(merch.some(x => x.id === m.id) ? merch.map(x => x.id === m.id ? m : x) : [...merch, m]);
@@ -1969,6 +2037,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
           const ci = await colorImgFor(w.partNum, { rbColorId: w.rbColorId, colorName: w.colorName });
           if (ci?.img) { next[i] = { ...w, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || w.colorName }; changed++; continue; }
         }
+        const le = partDbGet(w.partNum); if (le?.img) { next[i] = { ...w, img: le.img, name: w.name || le.name }; changed++; continue; }
         const p = await resolveRbPart(w.partNum);
         if (p?.part_img_url) { next[i] = { ...w, img: p.part_img_url, name: w.name || p.name }; changed++; }
       } catch {}
@@ -2428,12 +2497,15 @@ function WtbAddPart({ onAdd, linkTargets }) {
   const search = async () => {
     const ql = q.trim();
     if (!ql) return;
-    if (!getKey().trim()) { setMsg("Add your Rebrickable key in Settings first."); return; }
     setBusy(true); setMsg(""); setRes(null);
+    const isNum = /^[A-Za-z0-9.\-]+$/.test(ql) && /\d/.test(ql);
+    // catalog-first: a part number you already own (from any fetched set) resolves instantly + offline
+    if (isNum) { const le = partDbGet(ql); if (le && (le.img || le.name)) { setRes([{ part_num: le.num, name: le.name, part_img_url: le.img }]); setBusy(false); return; } }
+    if (!getKey().trim()) { setMsg("Add your Rebrickable key in Settings first."); setBusy(false); return; }
     try {
       // a bare part number resolves directly (also catches printed/BrickLink ids); otherwise search by text
       let results = [];
-      if (/^[A-Za-z0-9.\-]+$/.test(ql) && /\d/.test(ql)) { const p = await resolveRbPart(ql); if (p) results = [p]; }
+      if (isNum) { const p = await resolveRbPart(ql); if (p) results = [p]; }
       if (!results.length) { const j = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/?search=${encodeURIComponent(ql)}&page_size=24`); results = j.results || []; }
       setRes(results);
       if (!results.length) setMsg("No parts matched.");
@@ -2658,6 +2730,7 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
       try {
         if (p.colorName || p.rbColorId != null) { const ci = await colorImgFor(p.partNum, { rbColorId: p.rbColorId, colorName: p.colorName });
           if (ci?.img) { next[i] = { ...p, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || p.colorName }; changed++; continue; } }
+        const le = partDbGet(p.partNum); if (le?.img) { next[i] = { ...p, img: le.img, name: p.name || le.name }; changed++; continue; }
         const r = await resolveRbPart(p.partNum); if (r?.part_img_url) { next[i] = { ...p, img: r.part_img_url, name: p.name || r.name }; changed++; }
       } catch {}
     }
@@ -3468,6 +3541,12 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
 // ---------- Set detail ----------
 function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack, onDelete }) {
   const [rec, setRec] = useState(() => load(`bt:set:${setNum}`, null));
+  // top up the local part catalog from this set's parts whenever it's opened (covers sets fetched
+  // before the catalog existed, and restored backups) — idempotent, only fills blanks
+  useEffect(() => {
+    const r = load(`bt:set:${setNum}`, null);
+    if (r?.parts) partDbPutMany(r.parts.map(p => ({ partNum: p.partNumber, name: p.partName, colorID: p.colorID, colorName: p.colorName, colorImg: p.img })));
+  }, [setNum]);
   const [tagPick, setTagPick] = useState(false);
   const [recatTick, setRecatTick] = useState(0); // bump to recompute type grouping after a recategorise
   const [q, setQ] = useState("");
