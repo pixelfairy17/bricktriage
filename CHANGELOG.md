@@ -9,6 +9,14 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.50.0 — 2026-06-24
+
+- **WTB part rows now match a set's parts list exactly.** Tappable thumbnail to enlarge, tap the name to toggle got, and a horizontal **− / got/needed / +** stepper — replacing the typeable got box and the "N needed / M got" text. Complete rows go **green-bordered + dimmed**, same as a set.
+- **WTB images fetch automatically on open** (matching sets, whose images come free with the set inventory) — no need to tap **🖼 Get part images**. Runs once per list when a Rebrickable key is set; the manual button remains as a fallback.
+- **Fixed: parts pushed from a MOC's parts list (and a set's "Add missing") now carry their image + Rebrickable colour id.** They arrive **with** a picture instead of a blank thumbnail. This was the real reason "Get part images" looked broken on MOC-linked lists — those rows had no Rebrickable colour id to fetch a colour-correct image from.
+
+-----
+
 ## v0.49.0 — 2026-06-24
 
 - **WTB parts list now works like a set's parts list.** Replaced the **To Get / Got It** sections with a single grouped list plus a **filter bar**:
