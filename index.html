@@ -89,8 +89,13 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.51.0";
+const APP_VERSION = "0.52.0";
 const CHANGELOG = [
+  ["0.52.0", "2026-06-24", [
+    "MOC Parts List now matches the set & WTB parts lists: a filter bar (text filter by name/number/colour, Hide have toggle, Group: Colour ↔ Group: Part, ⌄/⌃ expand/collapse all, ↺ Reset filter) and the same row look + − / have/need / + stepper. Transferred pieces show as ♻️N inline.",
+    "All three parts lists now REMEMBER which colour/part groups you've expanded — the open/closed state persists per set / per MOC / per want list across tab switches and back-navigation (was resetting every time).",
+    "Fixed: WTB 'Get part images' could get stuck on 'Fetching images…'. Rebrickable requests now time out after 15s, a line that can't be resolved is flagged so auto-fetch won't retry it forever, and the busy state always clears (try/finally). Same hardening applied to the MOC image fetch.",
+  ]],
   ["0.51.0", "2026-06-24", [
     "Local part catalog (cache-first): every set you fetch now feeds a local parts database (bt:parts) — part name + the colour-correct image per colour. Adding a part or set whose parts you already own is now instant and works offline, with no blank/wrong-colour thumbnails, because it reads the catalog first and only calls Rebrickable for parts it has never seen.",
     "WTB 'Add a part' by number resolves instantly from the catalog when you already own that part (no key / no network needed); description search and brand-new parts still use Rebrickable (and get cached on the way through).",
@@ -706,7 +711,16 @@ const receiptTotals = (b, index, merch) => {
 
 // ---------- APIs ----------
 async function rbFetch(url) {
-  const res = await fetch(url, { headers: { Authorization: `key ${getKey().trim()}` } });
+  // hard timeout so a hung request can't leave the UI stuck on "Fetching images…" forever
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  let res;
+  try {
+    res = await fetch(url, { headers: { Authorization: `key ${getKey().trim()}` }, signal: ctrl.signal });
+  } catch (e) {
+    const err = new Error(e.name === "AbortError" ? "Rebrickable request timed out." : "Network error reaching Rebrickable.");
+    err.status = 0; throw err;
+  } finally { clearTimeout(timer); }
   if (!res.ok) {
     const e = new Error(res.status === 404 ? "Set not found on Rebrickable." :
       res.status === 401 || res.status === 403 ? "Rebrickable rejected the API key (Settings)." :
@@ -1940,10 +1954,16 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   const [srcSet, setSrcSet] = useState("");
   const [q, setQ] = useState("");
   const [openGroups, setOpenGroups] = useState(() => new Set());
-  const [wantOpen, setWantOpen] = useState(() => new Set()); // collapsible parts-list colour groups
-  const toggleWant = g => setWantOpen(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
+  // parts-list accordion open state persists per MOC (survives tab switches + back-navigation)
+  const wantOpenKey = `bt:moc:open:${moc?.id || "x"}`;
+  const [wantOpen, setWantOpen] = useState(() => new Set(load(wantOpenKey, [])));
+  const saveWantOpen = n => { save(wantOpenKey, [...n]); return n; };
+  const toggleWant = g => setWantOpen(prev => saveWantOpen((() => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; })()));
   const [partGroup, setPartGroupRaw] = useState(() => load("bt:mocpartgroup", "color")); // color | type
-  const setPartGroup = v => { setPartGroupRaw(v); save("bt:mocpartgroup", v); setWantOpen(new Set()); };
+  const setPartGroup = v => { setPartGroupRaw(v); save("bt:mocpartgroup", v); setWantOpen(saveWantOpen(new Set())); };
+  // set-style parts filter (mirrors the set & WTB parts lists): text filter + hide-have toggle
+  const [pq, setPq] = useState("");
+  const [hideHave, setHideHave] = useState(false);
   const [partsOpen, setPartsOpen] = useState(true); // Parts List accordion block
   const [addOpen, setAddOpen] = useState(false);    // collapsible add/import sub-block (hidden until tapped)
   const [sel, setSel] = useState(() => new Set());  // parts ticked to push onto a want list (by wanted index)
@@ -2023,29 +2043,34 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   };
   // Pull real part images (+ names) from Rebrickable for any line missing one — same source the sets
   // list uses, so imported/hand-added parts get a picture too. Stores onto the line permanently.
+  // each line tried at most once per sweep; unresolvable lines are flagged imgTried so re-runs don't
+  // hang on them. try/finally always clears the busy flag (fixes "stuck on Fetching images…").
   const fetchPartImages = async () => {
     if (!getKey().trim()) { setWtbMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setWtbMsg(""), 3500); return; }
     setImgBusy(true);
-    const next = [...wanted]; let changed = 0;
-    for (let i = 0; i < next.length; i++) {
-      const w = next[i];
-      if (w.img) continue;
-      try {
-        // colour-correct image when a colour is known (generic part image is the default colour);
-        // fall back to the default part image when no colour is set on the line.
-        if (w.colorName || w.rbColorId != null) {
-          const ci = await colorImgFor(w.partNum, { rbColorId: w.rbColorId, colorName: w.colorName });
-          if (ci?.img) { next[i] = { ...w, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || w.colorName }; changed++; continue; }
-        }
-        const le = partDbGet(w.partNum); if (le?.img) { next[i] = { ...w, img: le.img, name: w.name || le.name }; changed++; continue; }
-        const p = await resolveRbPart(w.partNum);
-        if (p?.part_img_url) { next[i] = { ...w, img: p.part_img_url, name: w.name || p.name }; changed++; }
-      } catch {}
-    }
-    if (changed) upsertMoc({ ...moc, wanted: next });
-    setImgBusy(false);
-    setWtbMsg(changed ? `Fetched ${changed} part image${changed === 1 ? "" : "s"}.` : "No new images found (parts may not be on Rebrickable).");
-    setTimeout(() => setWtbMsg(""), 3500);
+    try {
+      const next = [...wanted]; let changed = 0, dirty = false;
+      for (let i = 0; i < next.length; i++) {
+        const w = next[i];
+        if (w.img) continue;
+        let got = false;
+        try {
+          // colour-correct image when a colour is known (generic part image is the default colour);
+          // fall back to the default part image when no colour is set on the line.
+          if (w.colorName || w.rbColorId != null) {
+            const ci = await colorImgFor(w.partNum, { rbColorId: w.rbColorId, colorName: w.colorName });
+            if (ci?.img) { next[i] = { ...w, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || w.colorName }; got = true; }
+          }
+          if (!got) { const le = partDbGet(w.partNum); if (le?.img) { next[i] = { ...w, img: le.img, name: w.name || le.name }; got = true; } }
+          if (!got) { const p = await resolveRbPart(w.partNum); if (p?.part_img_url) { next[i] = { ...w, img: p.part_img_url, name: w.name || p.name }; got = true; } }
+        } catch {}
+        if (got) { changed++; dirty = true; }
+        else if (!w.imgTried) { next[i] = { ...w, imgTried: true }; dirty = true; }
+      }
+      if (dirty) upsertMoc({ ...moc, wanted: next });
+      setWtbMsg(changed ? `Fetched ${changed} part image${changed === 1 ? "" : "s"}.` : "No new images found (parts may not be on Rebrickable).");
+      setTimeout(() => setWtbMsg(""), 3500);
+    } finally { setImgBusy(false); }
   };
   // search Rebrickable parts by NAME or number so a part can be added without knowing its number
   const searchParts = async () => {
@@ -2261,65 +2286,78 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     <${Acc} title="Parts List" open=${partsOpen} onToggle=${() => setPartsOpen(v => !v)}
       summary=${wantTotal ? `${wantHave}/${wantTotal} · ${wantPct}%` : "empty"}>
       ${importMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin:0 0 8px">✓ ${importMsg}</div>`}
-      <div class="dim" style="font-size:12px;margin-bottom:8px">Every part this build needs. The <b>have/need</b> count is only what you've actually <b>transferred</b> in (<b>♻️</b> under the qty) or bought — donor / "in sets" pieces are shown as available but don't count until you tap <b>→</b> to transfer them. Tick parts (or <b>Select all missing</b>) to push to a want list; <b>swipe a row left</b> to delete it.</div>
+      <div class="dim" style="font-size:12px;margin-bottom:8px">Every part this build needs. The <b>have/need</b> count is only what you've actually <b>transferred</b> in (<b>♻️</b> on the row) or bought — donor / "in sets" pieces are shown as available but don't count until you tap <b>→</b> to transfer them. Tick parts (or <b>Select all missing</b>) to push to a want list; <b>swipe a row left</b> to delete it.</div>
       ${wanted.length === 0 && html`<div class="dim" style="font-size:12px;margin-bottom:8px">No parts yet — open <b>➕ Add / import parts</b> below to paste a Studio (XML) / Rebrickable (CSV) list or add part numbers by hand.</div>`}
-      ${wanted.length > 0 && html`<div class="row" style="gap:8px;margin-bottom:8px">
-        <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${selectAllMissing}>Select all missing</button>
-        ${sel.size > 0 && html`<button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${() => setSel(new Set())}>Clear selection</button>`}
-        <button class="chip" style="padding:7px 10px;font-size:12px;width:auto;border-color:var(--blue);color:var(--blue)"
-          onClick=${() => setPartGroup(partGroup === "type" ? "color" : "type")}>${partGroup === "type" ? "Group: Type" : "Group: Colour"}</button>
-        <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto;margin-left:auto;color:var(--red);border-color:var(--red)"
-          onClick=${() => { if (confirm("Clear the entire parts list?")) { setSel(new Set()); upsertMoc({ ...moc, wanted: [] }); } }}>Clear parts list</button>
-      </div>`}
-      ${(() => {
-        if (!wanted.length) return null;
-        // group the parts list by colour bucket (or part type) so it reads like a set's parts list
+      ${wanted.length > 0 && (() => {
+        // set-style filter + grouping (mirrors the set & WTB parts lists): text filter + hide-have,
+        // group by colour/part, expand/collapse all, reset filter. {w,i} keeps each line's original
+        // index so select / edit / delete still address the right row after filtering.
+        const ql = pq.trim().toLowerCase();
+        const vis = wanted.map((w, i) => ({ w, i })).filter(({ w }) =>
+          (!hideHave || haveFor(w.partNum) < (w.qty || 1)) &&
+          (!ql || (w.name || "").toLowerCase().includes(ql) || (w.partNum || "").toLowerCase().includes(ql) || (w.colorName || "").toLowerCase().includes(ql)));
         const map = new Map();
-        wanted.forEach((w, i) => { const g = partGroup === "type" ? partType(w.name, w.partNum) : colorGroup(w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push({ w, i }); });
+        for (const it of vis) { const g = partGroup === "type" ? partType(it.w.name, it.w.partNum) : colorGroup(it.w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push(it); }
         const rank = partGroup === "type" ? typeRank : groupRank;
         const entries = [...map.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
-        return entries.map(([g, items]) => {
-          const gNeed = items.reduce((a, x) => a + (x.w.qty || 0), 0);
-          const gHave = items.reduce((a, x) => a + Math.min(haveFor(x.w.partNum), x.w.qty || 0), 0);
-          const open = wantOpen.has(g);
-          return html`<div key=${g} style="margin-bottom:6px">
-            <button class="row" onClick=${() => toggleWant(g)}
-              style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
-              <span class="label" style="margin:0">${g} · ${items.length}</span>
-              <span class="row" style="gap:10px">
-                <span class="mono" style=${`font-size:12px;font-weight:700;color:${gHave >= gNeed ? "var(--green)" : "var(--dim)"}`}>${gHave}/${gNeed}</span>
-                <span class="dim">${open ? "▾" : "▸"}</span>
-              </span>
-            </button>
-            ${open && html`<div style="margin-top:6px">
-            ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i), dn = donorFor(w.partNum), av = inSetsFor(w.partNum), tr = allocFor(w.partNum);
-              const lnk = "background:none;border:none;padding:0;font:inherit;color:var(--blue);font-weight:700;text-decoration:underline;cursor:pointer";
-              return html`<${SwipeRow} key=${i}
-                onEdit=${() => setEditWanted({ i, w })}
-                onDelete=${() => { setSel(new Set()); upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) }); }}>
-                <div class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)"};border-radius:10px;padding:7px 8px;${ok && !picked ? "opacity:.7" : ""}`}>
-                <button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${picked ? "var(--blue)" : "var(--dim)"};background:${picked ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${() => toggleSel(i)}>${picked ? "✓" : ""}</button>
-                <span style="flex-shrink:0;cursor:pointer" onClick=${() => setViewPart({ img: partImgFor(w), partName: w.name || w.partNum, partNumber: w.partNum, colorName: w.colorName || "" })}>
-                  <${Thumb} src=${partImgFor(w)} size=${34} />
+        const allOpen = entries.length > 0 && entries.every(([g]) => wantOpen.has(g));
+        const toggleAll = () => setWantOpen(saveWantOpen(allOpen ? new Set() : new Set(entries.map(([g]) => g))));
+        const lnk = "background:none;border:none;padding:0;font:inherit;color:var(--blue);font-weight:700;text-decoration:underline;cursor:pointer";
+        return html`<div>
+          <input placeholder="Filter parts (name / number / colour)" value=${pq} onInput=${e => setPq(e.target.value)} />
+          <div class="row" style="gap:6px;margin:10px 0 8px;flex-wrap:wrap">
+            <${Chip} label=${partGroup === "type" ? "Group: Part" : "Group: Colour"} color="var(--blue)" active onClick=${() => setPartGroup(partGroup === "type" ? "color" : "type")} />
+            <${Chip} label="Hide have" color="var(--green)" active=${hideHave} onClick=${() => setHideHave(v => !v)} />
+            <${Chip} label=${allOpen ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false} onClick=${toggleAll} />
+            <${Chip} label="↺ Reset filter" color="var(--red)" active=${false} onClick=${() => { setPq(""); setHideHave(false); }} />
+          </div>
+          <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
+            <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${selectAllMissing}>Select all missing</button>
+            ${sel.size > 0 && html`<button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${() => setSel(new Set())}>Clear selection</button>`}
+            <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto;margin-left:auto;color:var(--red);border-color:var(--red)"
+              onClick=${() => { if (confirm("Clear the entire parts list?")) { setSel(new Set()); upsertMoc({ ...moc, wanted: [] }); } }}>Clear parts list</button>
+          </div>
+          ${entries.length === 0 && html`<div class="card dim" style="text-align:center;padding:16px;font-size:13px">No parts match the filter.</div>`}
+          ${entries.map(([g, items]) => {
+            const gNeed = items.reduce((a, x) => a + (x.w.qty || 0), 0);
+            const gHave = items.reduce((a, x) => a + Math.min(haveFor(x.w.partNum), x.w.qty || 0), 0);
+            const open = ql.length > 0 || wantOpen.has(g);
+            return html`<div key=${g} style="margin-bottom:6px">
+              <button class="row" onClick=${() => toggleWant(g)}
+                style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
+                <span class="label" style="margin:0">${g} · ${items.length}</span>
+                <span class="row" style="gap:10px">
+                  <span class="mono" style=${`font-size:12px;font-weight:700;color:${gHave >= gNeed ? "var(--green)" : "var(--dim)"}`}>${gHave}/${gNeed}</span>
+                  <span class="dim">${open ? "▾" : "▸"}</span>
                 </span>
-                <div style="flex:1;min-width:0">
-                  <div class="clamp2" style="font-size:13px;font-weight:600;line-height:1.2;cursor:pointer" onClick=${() => toggleSel(i)}>${w.name || w.partNum}</div>
-                  <div class="dim mono" style="font-size:11px"><span style="cursor:pointer" onClick=${() => toggleSel(i)}>${w.colorName || "—"} · ${w.partNum}</span>${(dn > 0 || av > 0) ? html` · ${[
-                    dn > 0 && html`<button style=${lnk} onClick=${() => setSourceFor({ pn: w.partNum, kind: "donor" })}>Found ${dn} in donor</button>`,
-                    av > 0 && html`<button style=${lnk} onClick=${() => setSourceFor({ pn: w.partNum, kind: "avail" })}>${dn > 0 ? `${av} in sets` : `Found ${av} in sets`}</button>`,
-                  ].filter(Boolean).map((el, j) => html`${j ? " • " : ""}${el}`)}` : ""}</div>
-                  ${(() => { const pt = resolveTags(tags, partTagIds(w.partNum)); return pt.length ? html`<div style="margin-top:3px"><${TagChips} tags=${pt} small /></div>` : null; })()}
-                </div>
-                <button class="step" style="width:28px;height:28px;flex-shrink:0" disabled=${(w.qty || 1) <= 1} onClick=${() => setWantQtyAt(i, (w.qty || 1) - 1)}>−</button>
-                <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;min-width:36px">
-                  <div class="mono" style=${`font-size:13px;font-weight:700;color:${ok ? "var(--green)" : "var(--text)"}`}>${Math.min(have, w.qty)}/${w.qty}</div>
-                  ${tr > 0 && html`<div class="mono" style="font-size:9px;font-weight:800;color:var(--purple);line-height:1;margin-top:1px">♻️${tr}</div>`}
-                </div>
-                <button class="step plus" style="width:28px;height:28px;flex-shrink:0" onClick=${() => setWantQtyAt(i, (w.qty || 1) + 1)}>+</button>
-              </div></${SwipeRow}>`; })}
-            </div>`}
-          </div>`;
-        });
+              </button>
+              ${open && html`<div style="margin-top:6px">
+              ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i), dn = donorFor(w.partNum), av = inSetsFor(w.partNum), tr = allocFor(w.partNum);
+                const border = picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)";
+                return html`<${SwipeRow} key=${i}
+                  onEdit=${() => setEditWanted({ i, w })}
+                  onDelete=${() => { setSel(new Set()); upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) }); }}>
+                  <div class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;opacity:${ok && !picked ? .65 : 1}`}>
+                  <button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${picked ? "var(--blue)" : "var(--dim)"};background:${picked ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${() => toggleSel(i)}>${picked ? "✓" : ""}</button>
+                  <span style="flex-shrink:0;cursor:pointer" onClick=${() => setViewPart({ img: partImgFor(w), partName: w.name || w.partNum, partNumber: w.partNum, colorName: w.colorName || "" })}>
+                    <${Thumb} src=${partImgFor(w)} size=${40} />
+                  </span>
+                  <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => toggleSel(i)}>
+                    <div class="clamp2" style="font-size:13px;line-height:1.25">${w.name || w.partNum}</div>
+                    <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}${tr > 0 ? html` · <span style="color:var(--purple);font-weight:700">♻️${tr}</span>` : ""}${(dn > 0 || av > 0) ? html` · ${[
+                      dn > 0 && html`<button style=${lnk} onClick=${ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind: "donor" }); }}>Found ${dn} in donor</button>`,
+                      av > 0 && html`<button style=${lnk} onClick=${ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind: "avail" }); }}>${dn > 0 ? `${av} in sets` : `Found ${av} in sets`}</button>`,
+                    ].filter(Boolean).map((el, j) => html`${j ? " • " : ""}${el}`)}` : ""}</div>
+                    ${(() => { const pt = resolveTags(tags, partTagIds(w.partNum)); return pt.length ? html`<div style="margin-top:3px"><${TagChips} tags=${pt} small /></div>` : null; })()}
+                  </div>
+                  <button class="step" style="width:34px" disabled=${(w.qty || 1) <= 1} onClick=${() => setWantQtyAt(i, (w.qty || 1) - 1)}>−</button>
+                  <div class="mono" style=${`font-size:14px;font-weight:700;min-width:38px;text-align:center;color:${ok ? "var(--green)" : "var(--text)"}`}>${Math.min(have, w.qty)}/${w.qty}</div>
+                  <button class="step plus" style="width:34px" onClick=${() => setWantQtyAt(i, (w.qty || 1) + 1)}>+</button>
+                </div></${SwipeRow}>`; })}
+              </div>`}
+            </div>`;
+          })}
+        </div>`;
       })()}
       ${sel.size > 0 && html`<button class="btn blue" style="margin-top:8px" onClick=${addSelToWant}>🛒 Add ${sel.size} ticked part${sel.size === 1 ? "" : "s"} to want list</button>`}
       ${wtbMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin-top:6px">✓ ${wtbMsg}</div>`}
@@ -2691,7 +2729,10 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(list.name || "");
   const [confirmDel, setConfirmDel] = useState(false);
-  const [open, setOpen] = useState(() => new Set());
+  // accordion open/closed state persists per list (survives tab switches + back-navigation)
+  const openKey = `bt:wtb:open:${list.id}`;
+  const [open, setOpen] = useState(() => new Set(load(openKey, [])));
+  const saveOpen = n => { save(openKey, [...n]); return n; };
   // set-style parts filter (mirrors the set parts list): text filter, hide-purchased, group by
   // colour ↔ part type, expand/collapse all, reset filter.
   const [q, setQ] = useState("");
@@ -2702,7 +2743,7 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
   const [editPart, setEditPart] = useState(null);  // swipe Edit → colour/qty/For sheet
   const [imgBusy, setImgBusy] = useState(false);
   const [imgMsg, setImgMsg] = useState("");
-  const toggle = g => setOpen(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
+  const toggle = g => setOpen(prev => saveOpen((() => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; })()));
   const parts = list.parts || [];
   const haveOf = p => p.have != null ? p.have : (p.got ? (p.qty || 1) : 0);
   const s = wtbStats(list);
@@ -2722,30 +2763,40 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
   };
   // pull colour-correct Rebrickable images for any line missing one (item 4). `silent` = auto-run
   // on open (no toast / no "key first" nag — just fill what it can in the background).
+  // `silent` = auto-run on open (no toast / no "key first" nag). Each line is tried at most once per
+  // sweep; a line that can't be resolved is flagged imgTried so a silent re-open won't keep retrying
+  // it forever (that was the "stuck on Fetching images…"). The manual button retries everything
+  // missing (ignores imgTried). try/finally guarantees the busy flag always clears.
   const getImages = async (silent = false) => {
     if (!getKey().trim()) { if (!silent) { setImgMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setImgMsg(""), 3500); } return; }
     setImgBusy(true);
-    const next = [...parts]; let changed = 0;
-    for (let i = 0; i < next.length; i++) { const p = next[i]; if (p.img || !p.partNum) continue;
-      try {
-        if (p.colorName || p.rbColorId != null) { const ci = await colorImgFor(p.partNum, { rbColorId: p.rbColorId, colorName: p.colorName });
-          if (ci?.img) { next[i] = { ...p, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || p.colorName }; changed++; continue; } }
-        const le = partDbGet(p.partNum); if (le?.img) { next[i] = { ...p, img: le.img, name: p.name || le.name }; changed++; continue; }
-        const r = await resolveRbPart(p.partNum); if (r?.part_img_url) { next[i] = { ...p, img: r.part_img_url, name: p.name || r.name }; changed++; }
-      } catch {}
-    }
-    if (changed) onUpdate({ ...list, parts: next });
-    setImgBusy(false);
-    if (!silent) { setImgMsg(changed ? `Fetched ${changed} image${changed === 1 ? "" : "s"}.` : "No new images found."); setTimeout(() => setImgMsg(""), 3500); }
+    try {
+      const next = [...parts]; let changed = 0, dirty = false;
+      for (let i = 0; i < next.length; i++) { const p = next[i];
+        if (p.img || !p.partNum) continue;
+        if (silent && p.imgTried) continue;
+        let got = false;
+        try {
+          if (p.colorName || p.rbColorId != null) { const ci = await colorImgFor(p.partNum, { rbColorId: p.rbColorId, colorName: p.colorName });
+            if (ci?.img) { next[i] = { ...p, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || p.colorName }; got = true; } }
+          if (!got) { const le = partDbGet(p.partNum); if (le?.img) { next[i] = { ...p, img: le.img, name: p.name || le.name }; got = true; } }
+          if (!got) { const r = await resolveRbPart(p.partNum); if (r?.part_img_url) { next[i] = { ...p, img: r.part_img_url, name: p.name || r.name }; got = true; } }
+        } catch {}
+        if (got) { changed++; dirty = true; }
+        else if (!p.imgTried) { next[i] = { ...p, imgTried: true }; dirty = true; }
+      }
+      if (dirty) onUpdate({ ...list, parts: next });
+      if (!silent) { setImgMsg(changed ? `Fetched ${changed} image${changed === 1 ? "" : "s"}.` : "No new images found."); setTimeout(() => setImgMsg(""), 3500); }
+    } finally { setImgBusy(false); }
   };
   // Auto-fetch missing images when the list opens — same effect as a set's parts (whose images come
-  // free with the inventory). Runs once per list (a ref guards against the onUpdate re-render loop),
-  // only when a key is set and something is actually missing an image.
+  // free with the inventory). Runs once per mount, only when a key is set and something is still
+  // un-tried; imgTried (persisted on the line) stops it re-sweeping unresolvable parts on every open.
   const autoImgDone = useRef("");
   useEffect(() => {
     if (autoImgDone.current === list.id) return;
-    if (!getKey().trim()) return;
-    if (!parts.some(p => !p.img && p.partNum)) return;
+    if (imgBusy || !getKey().trim()) return;
+    if (!parts.some(p => !p.img && !p.imgTried && p.partNum)) return;
     autoImgDone.current = list.id;
     getImages(true);
   }, [list.id, parts]);
@@ -2785,7 +2836,7 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
     return [...m.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
   })();
   const allOpen = groups.length > 0 && groups.every(([g]) => open.has(g));
-  const toggleAll = () => setOpen(allOpen ? new Set() : new Set(groups.map(([g]) => g)));
+  const toggleAll = () => setOpen(saveOpen(allOpen ? new Set() : new Set(groups.map(([g]) => g))));
   const resetFilter = () => { setQ(""); setHideGot(false); };
   const gotCount = parts.filter(p => haveOf(p) >= (p.qty || 1)).length;
   const renderGroups = entries => entries.map(([g, gi]) => {
@@ -3557,7 +3608,10 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const [lastAct, setLastAct] = useState(null); // {id, applied, qty, ts} — tiny "just changed" hint under a row
   // #3: opening a set always starts at the top (the shared .content kept the list's scroll position)
   useEffect(() => { document.querySelector(".content")?.scrollTo({ top: 0 }); }, []);
-  const [openColors, setOpenColors] = useState(() => new Set());
+  // accordion open/closed state persists per set (survives tab switches + back-navigation)
+  const openColorsKey = `bt:set:open:${setNum}`;
+  const [openColors, setOpenColors] = useState(() => new Set(load(openColorsKey, [])));
+  const saveOpenColors = n => { save(openColorsKey, [...n]); return n; };
   const [moveP, setMoveP] = useState(null); // part row being pushed to a MOC
   const [bulkMoc, setBulkMoc] = useState(false); // #7 bulk-move selected parts to a MOC (picker open)
   const [savedMsg2, setSavedMsg2] = useState(""); // transient "added to want list" confirmation
@@ -3580,9 +3634,9 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     setSelIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
   const [viewPart, setViewPart] = useState(null); // #3 full-size part image
-  const toggleColor = c => setOpenColors(prev => {
+  const toggleColor = c => setOpenColors(prev => saveOpenColors((() => {
     const n = new Set(prev); n.has(c) ? n.delete(c) : n.add(c); return n;
-  });
+  })()));
   // per-part-row MOC allocations for this set
   const rowAlloc = useMemo(() => {
     const m = new Map();
@@ -3949,7 +4003,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
         <${Chip} label=${groupMode === "group" ? "Group: Colour" : groupMode === "type" ? "Group: Type" : "Group: Exact"} color="var(--blue)" active
           onClick=${() => setGroupMode(groupMode === "group" ? "type" : groupMode === "type" ? "exact" : "group")} />
         <${Chip} label=${openColors.size >= groups.length + 1 && groups.length > 0 ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false}
-          onClick=${() => setOpenColors(openColors.size >= groups.length + 1 ? new Set() : new Set(["__acc", ...groups.map(g => g[0])]))} />
+          onClick=${() => setOpenColors(saveOpenColors(openColors.size >= groups.length + 1 ? new Set() : new Set(["__acc", ...groups.map(g => g[0])])))} />
         <${Chip} label="↺ Reset" color="var(--red)" active=${false} onClick=${() => setConfirmReset(v => !v)} />
       </div>
       ${confirmReset && html`<div class="row" style="gap:8px;margin-top:10px;align-items:center">

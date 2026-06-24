@@ -9,6 +9,14 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.52.0 — 2026-06-24
+
+- **MOC Parts List now matches the set & WTB parts lists.** Same filter bar — text filter (name/number/colour), **Hide have** toggle, **Group: Colour ↔ Group: Part**, **⌄/⌃ All** expand/collapse-all, **↺ Reset filter** — and the same row look + **− / have/need / +** stepper. Transferred pieces show as **♻️N** inline.
+- **All three parts lists remember expanded groups.** The accordion open/closed state now persists **per set / per MOC / per want list** across tab switches and back-navigation (it was resetting every time).
+- **Fixed: WTB "Get part images" stuck on "Fetching images…".** Rebrickable requests now **time out after 15s**, an unresolvable line is flagged so auto-fetch won't retry it forever, and the busy state **always clears** (try/finally). Same hardening applied to the MOC image fetch.
+
+-----
+
 ## v0.51.0 — 2026-06-24
 
 - **Local part catalog (cache-first).** Every set you fetch now feeds a local parts database (`bt:parts`): part **name** + the **colour-correct image** for each colour seen.
