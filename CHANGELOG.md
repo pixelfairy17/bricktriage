@@ -9,6 +9,13 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.53.0 — 2026-06-24
+
+- **Fixed for real: WTB (and MOC) parts lists stuck on "Fetching images…".** Opening a list no longer kicks off a background **network** sweep (the real cause — on a big/uncached list it kept the spinner up, and navigating away before it finished meant it re-swept every open). Lists now **fill images instantly from the local catalog only** — no spinner, no hang.
+- The **🖼 Get part images** button still does the network fetch for parts the catalog can't cover, but now runs **5 requests in parallel**, is bounded by a **15s per-request timeout**, and **always clears** its busy state.
+
+-----
+
 ## v0.52.0 — 2026-06-24
 
 - **MOC Parts List now matches the set & WTB parts lists.** Same filter bar — text filter (name/number/colour), **Hide have** toggle, **Group: Colour ↔ Group: Part**, **⌄/⌃ All** expand/collapse-all, **↺ Reset filter** — and the same row look + **− / have/need / +** stepper. Transferred pieces show as **♻️N** inline.
