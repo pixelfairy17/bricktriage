@@ -89,8 +89,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.52.0";
+const APP_VERSION = "0.53.0";
 const CHANGELOG = [
+  ["0.53.0", "2026-06-24", [
+    "Fixed for real: WTB (and MOC) parts lists getting stuck on 'Fetching images…'. Opening a list no longer kicks off a background NETWORK sweep — it now fills images instantly from the local catalog only (no spinner, no hang). The 🖼 Get part images button still does the network fetch for parts the catalog can't cover, but now runs 5 requests in parallel, is bounded by a 15s per-request timeout, and always clears its busy state.",
+  ]],
   ["0.52.0", "2026-06-24", [
     "MOC Parts List now matches the set & WTB parts lists: a filter bar (text filter by name/number/colour, Hide have toggle, Group: Colour ↔ Group: Part, ⌄/⌃ expand/collapse all, ↺ Reset filter) and the same row look + − / have/need / + stepper. Transferred pieces show as ♻️N inline.",
     "All three parts lists now REMEMBER which colour/part groups you've expanded — the open/closed state persists per set / per MOC / per want list across tab switches and back-navigation (was resetting every time).",
@@ -2041,33 +2044,46 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     setWtbMsg(`Added ${picks.length} part${picks.length === 1 ? "" : "s"} to a want list.`);
     setTimeout(() => setWtbMsg(""), 3500);
   };
-  // Pull real part images (+ names) from Rebrickable for any line missing one — same source the sets
-  // list uses, so imported/hand-added parts get a picture too. Stores onto the line permanently.
-  // each line tried at most once per sweep; unresolvable lines are flagged imgTried so re-runs don't
-  // hang on them. try/finally always clears the busy flag (fixes "stuck on Fetching images…").
+  // Auto-fill images from the LOCAL CATALOG only — instant, no network, no spinner (same as the WTB
+  // list). Covers every part you already own. The 🖼 button below does the NETWORK fetch for the rest.
+  const fillFromCatalog = () => {
+    let dirty = false;
+    const next = wanted.map(w => {
+      if (w.img || !w.partNum) return w;
+      const ci = partDbColorImg(w.partNum, { rbColorId: w.rbColorId, colorName: w.colorName });
+      if (ci?.img) { dirty = true; return { ...w, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || w.colorName }; }
+      const le = partDbGet(w.partNum);
+      if (le?.img) { dirty = true; return { ...w, img: le.img, name: w.name || le.name }; }
+      return w;
+    });
+    if (dirty) upsertMoc({ ...moc, wanted: next });
+  };
+  useEffect(() => { fillFromCatalog(); }, [moc.id, wanted]);
+  // Manual 🖼 button — NETWORK fetch for parts the catalog can't cover. Parallel workers (fast +
+  // bounded by rbFetch's 15s timeout), one save at the end, try/finally so the spinner always clears.
   const fetchPartImages = async () => {
     if (!getKey().trim()) { setWtbMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setWtbMsg(""), 3500); return; }
+    const targets = wanted.map((w, i) => ({ w, i })).filter(({ w }) => !w.img && w.partNum);
+    if (!targets.length) { setWtbMsg("No parts need images."); setTimeout(() => setWtbMsg(""), 3500); return; }
     setImgBusy(true);
     try {
-      const next = [...wanted]; let changed = 0, dirty = false;
-      for (let i = 0; i < next.length; i++) {
-        const w = next[i];
-        if (w.img) continue;
-        let got = false;
-        try {
-          // colour-correct image when a colour is known (generic part image is the default colour);
-          // fall back to the default part image when no colour is set on the line.
-          if (w.colorName || w.rbColorId != null) {
-            const ci = await colorImgFor(w.partNum, { rbColorId: w.rbColorId, colorName: w.colorName });
-            if (ci?.img) { next[i] = { ...w, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || w.colorName }; got = true; }
-          }
-          if (!got) { const le = partDbGet(w.partNum); if (le?.img) { next[i] = { ...w, img: le.img, name: w.name || le.name }; got = true; } }
-          if (!got) { const p = await resolveRbPart(w.partNum); if (p?.part_img_url) { next[i] = { ...w, img: p.part_img_url, name: w.name || p.name }; got = true; } }
-        } catch {}
-        if (got) { changed++; dirty = true; }
-        else if (!w.imgTried) { next[i] = { ...w, imgTried: true }; dirty = true; }
-      }
-      if (dirty) upsertMoc({ ...moc, wanted: next });
+      const patches = new Map(); let idx = 0; // wanted index → patch
+      const worker = async () => {
+        while (idx < targets.length) {
+          const { w, i } = targets[idx++]; let patch = null;
+          try {
+            if (w.colorName || w.rbColorId != null) { const ci = await colorImgFor(w.partNum, { rbColorId: w.rbColorId, colorName: w.colorName });
+              if (ci?.img) patch = { img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || w.colorName }; }
+            if (!patch) { const le = partDbGet(w.partNum); if (le?.img) patch = { img: le.img, name: w.name || le.name }; }
+            if (!patch) { const p = await resolveRbPart(w.partNum); if (p?.part_img_url) patch = { img: p.part_img_url, name: w.name || p.name }; }
+          } catch {}
+          patches.set(i, patch || { imgTried: true });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(5, targets.length) }, worker));
+      const next = wanted.map((w, i) => patches.has(i) ? { ...w, ...patches.get(i) } : w);
+      const changed = [...patches.values()].filter(x => x.img).length;
+      upsertMoc({ ...moc, wanted: next });
       setWtbMsg(changed ? `Fetched ${changed} part image${changed === 1 ? "" : "s"}.` : "No new images found (parts may not be on Rebrickable).");
       setTimeout(() => setWtbMsg(""), 3500);
     } finally { setImgBusy(false); }
@@ -2761,45 +2777,53 @@ function WtbListDetail({ list, info, mocs = [], index = [], tags = [], createTag
     if (p.forType === "set") { const e = index.find(x => x.setNum === p.forId); return e ? `🧱 ${e.name}` : null; }
     return null;
   };
-  // pull colour-correct Rebrickable images for any line missing one (item 4). `silent` = auto-run
-  // on open (no toast / no "key first" nag — just fill what it can in the background).
-  // `silent` = auto-run on open (no toast / no "key first" nag). Each line is tried at most once per
-  // sweep; a line that can't be resolved is flagged imgTried so a silent re-open won't keep retrying
-  // it forever (that was the "stuck on Fetching images…"). The manual button retries everything
-  // missing (ignores imgTried). try/finally guarantees the busy flag always clears.
-  const getImages = async (silent = false) => {
-    if (!getKey().trim()) { if (!silent) { setImgMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setImgMsg(""), 3500); } return; }
+  // Auto-fill images from the LOCAL CATALOG only — instant, no network, no busy spinner. Covers every
+  // part you already own (from any fetched set). Runs on open + whenever parts change; converges in a
+  // render or two (filled parts stop being candidates). This replaces the old background NETWORK sweep,
+  // which is what left the button stuck on "Fetching images…" on big/uncached lists.
+  const fillFromCatalog = () => {
+    let dirty = false;
+    const next = parts.map(p => {
+      if (p.img || !p.partNum) return p;
+      const ci = partDbColorImg(p.partNum, { rbColorId: p.rbColorId, colorName: p.colorName });
+      if (ci?.img) { dirty = true; return { ...p, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || p.colorName }; }
+      const le = partDbGet(p.partNum);
+      if (le?.img) { dirty = true; return { ...p, img: le.img, name: p.name || le.name }; }
+      return p;
+    });
+    if (dirty) onUpdate({ ...list, parts: next });
+  };
+  useEffect(() => { fillFromCatalog(); }, [list.id, parts]);
+  // Manual 🖼 button — NETWORK fetch for parts the catalog can't cover. Parallel workers (fast +
+  // bounded by rbFetch's 15s timeout), one save at the end, try/finally so the spinner always clears.
+  const getImages = async () => {
+    if (!getKey().trim()) { setImgMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setImgMsg(""), 3500); return; }
+    const targets = parts.filter(p => !p.img && p.partNum);
+    if (!targets.length) { setImgMsg("No parts need images."); setTimeout(() => setImgMsg(""), 3500); return; }
     setImgBusy(true);
     try {
-      const next = [...parts]; let changed = 0, dirty = false;
-      for (let i = 0; i < next.length; i++) { const p = next[i];
-        if (p.img || !p.partNum) continue;
-        if (silent && p.imgTried) continue;
-        let got = false;
-        try {
-          if (p.colorName || p.rbColorId != null) { const ci = await colorImgFor(p.partNum, { rbColorId: p.rbColorId, colorName: p.colorName });
-            if (ci?.img) { next[i] = { ...p, img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || p.colorName }; got = true; } }
-          if (!got) { const le = partDbGet(p.partNum); if (le?.img) { next[i] = { ...p, img: le.img, name: p.name || le.name }; got = true; } }
-          if (!got) { const r = await resolveRbPart(p.partNum); if (r?.part_img_url) { next[i] = { ...p, img: r.part_img_url, name: p.name || r.name }; got = true; } }
-        } catch {}
-        if (got) { changed++; dirty = true; }
-        else if (!p.imgTried) { next[i] = { ...p, imgTried: true }; dirty = true; }
-      }
-      if (dirty) onUpdate({ ...list, parts: next });
-      if (!silent) { setImgMsg(changed ? `Fetched ${changed} image${changed === 1 ? "" : "s"}.` : "No new images found."); setTimeout(() => setImgMsg(""), 3500); }
+      const patches = new Map(); // part id → patch (image found, or just {imgTried} so we don't loop on it)
+      let idx = 0;
+      const worker = async () => {
+        while (idx < targets.length) {
+          const p = targets[idx++]; let patch = null;
+          try {
+            if (p.colorName || p.rbColorId != null) { const ci = await colorImgFor(p.partNum, { rbColorId: p.rbColorId, colorName: p.colorName });
+              if (ci?.img) patch = { img: ci.img, rbColorId: ci.rbColorId, colorName: ci.colorName || p.colorName }; }
+            if (!patch) { const le = partDbGet(p.partNum); if (le?.img) patch = { img: le.img, name: p.name || le.name }; }
+            if (!patch) { const r = await resolveRbPart(p.partNum); if (r?.part_img_url) patch = { img: r.part_img_url, name: p.name || r.name }; }
+          } catch {}
+          patches.set(p.id, patch || { imgTried: true });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(5, targets.length) }, worker));
+      const next = parts.map(p => patches.has(p.id) ? { ...p, ...patches.get(p.id) } : p);
+      const changed = [...patches.values()].filter(x => x.img).length;
+      onUpdate({ ...list, parts: next });
+      setImgMsg(changed ? `Fetched ${changed} image${changed === 1 ? "" : "s"}.` : "No new images found.");
+      setTimeout(() => setImgMsg(""), 3500);
     } finally { setImgBusy(false); }
   };
-  // Auto-fetch missing images when the list opens — same effect as a set's parts (whose images come
-  // free with the inventory). Runs once per mount, only when a key is set and something is still
-  // un-tried; imgTried (persisted on the line) stops it re-sweeping unresolvable parts on every open.
-  const autoImgDone = useRef("");
-  useEffect(() => {
-    if (autoImgDone.current === list.id) return;
-    if (imgBusy || !getKey().trim()) return;
-    if (!parts.some(p => !p.img && !p.imgTried && p.partNum)) return;
-    autoImgDone.current = list.id;
-    getImages(true);
-  }, [list.id, parts]);
   // one part row — same look as a set's parts list (PartRow): tappable thumbnail to enlarge, tap the
   // name area to toggle got full/none, horizontal − / got/needed / + stepper, green border + dimmed
   // when complete. Swipe left for Edit (colour/qty/For) + Delete.
