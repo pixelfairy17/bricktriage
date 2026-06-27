@@ -89,8 +89,15 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.53.0";
+const APP_VERSION = "0.54.0";
 const CHANGELOG = [
+  ["0.54.0", "2026-06-27", [
+    "Sorting mode: after every +1 (search, scan-auto-log, or the set-finder) a green “✓ Last added → <set> · View set ›” bar appears, and each hit row's set name is now tappable — jump straight into the set you just added a part to, then ◁ back returns to Sorting.",
+    "Sets: new “Recent part” sort (with the existing ↑/↓ Asc/Desc) orders sets by when you last added a part to them — the set you're actively filling rises to the top. Falls back to date added for sets you haven't touched.",
+    "Set detail accordions (Triage / Value / Instructions / Box / Buys & notes) now REMEMBER collapsed/expanded state per set — collapsing Triage keeps it collapsed instead of springing back open every time you reopen the set.",
+    "Hunt: printed/sticker parts are no longer silently mis-resolved. A printed id (e.g. 2454pb152) only resolves to a Rebrickable part on an EXACT BrickLink-id match (or a single unambiguous hit) — it will no longer show a generic plain mould's sets by mistake.",
+    "Hunt: when a printed part can't be listed in-app, the finder now lets you type the set number (found via the BrickLink link) and Add it right there — it fetches the inventory, marks that printed part found (matched to the plain tile the set lists), and offers View set. Marking a printed part also works when logging into a set you already track.",
+  ]],
   ["0.53.0", "2026-06-24", [
     "Fixed for real: WTB (and MOC) parts lists getting stuck on 'Fetching images…'. Opening a list no longer kicks off a background NETWORK sweep — it now fills images instantly from the local catalog only (no spinner, no hang). The 🖼 Get part images button still does the network fetch for parts the catalog can't cover, but now runs 5 requests in parallel, is bounded by a 15s per-request timeout, and always clears its busy state.",
   ]],
@@ -667,6 +674,10 @@ function completion(parts, includeSpares = countSpares()) {
   }
   return { found, total: need, pct: need ? Math.round((found / need) * 100) : 0 };
 }
+// total found-qty across a set's parts + minifig parts — used to detect when a part was just added
+// (drives the index's lastPartAt stamp and the "Recently added part" sort).
+const foundCount = r => (r.parts || []).reduce((a, p) => a + (p.qtyFound || 0), 0)
+  + (r.minifigs || []).reduce((a, f) => a + (f.parts || []).reduce((b, p) => b + (p.qtyFound || 0), 0), 0);
 const normSetNum = s => { const t = s.trim(); return t && !t.includes("-") ? `${t}-1` : t; };
 // "last bulk buy" = the BULK-kind buy most recently added to (newest set dateAdded among its links);
 // falls back to the newest-created bulk buy if none has sets yet. Regular buys never qualify.
@@ -696,7 +707,7 @@ const indexEntry = rec => {
   const { found, total, pct } = completion(rec.parts);
   return { setNum: rec.setNum, name: rec.name, year: rec.year, idxVer: 5, tags: rec.tags || [],
     img: rec.imgDefault === "box" ? blBoxImg(rec.setNum) : rec.img, triage: rec.triage,
-    instructions: rec.instructions, found, total, pct, dateAdded: rec.dateAdded, buyIds: rec.buyIds || [],
+    instructions: rec.instructions, found, total, pct, dateAdded: rec.dateAdded, lastPartAt: rec.lastPartAt || null, buyIds: rec.buyIds || [],
     theme: rec.theme || null, bookletQty: (rec.booklets || []).length, donor: !!rec.donor,
     condition: condOfSet(rec), built: !!rec.built, building: !!rec.building,
     pricePaid: rec.pricePaid || 0, rrp: rec.rrp || 0, boxHas: !!rec.box?.has,
@@ -746,9 +757,10 @@ async function resolveRbPart(pn) {
     try {
       const j = await rbFetch(`https://rebrickable.com/api/v3/lego/parts/?bricklink_id=${encodeURIComponent(pn)}&page_size=5`);
       if (Array.isArray(j.results) && j.results.length && (j.count == null || j.count <= 5)) {
-        const r = j.results.find(r => r.external_ids?.BrickLink?.includes(pn)) || j.results[0];
-        if (r) partDbPut({ partNum: r.part_num, name: r.name, img: r.part_img_url });
-        return r;
+        // Only accept an EXACT BrickLink-id hit, or a single unambiguous result. Otherwise return null
+        // rather than a misleading generic mould (e.g. printed 2454pb152 must not resolve to plain 2454).
+        const r = j.results.find(r => r.external_ids?.BrickLink?.includes(pn)) || (j.results.length === 1 ? j.results[0] : null);
+        if (r) { partDbPut({ partNum: r.part_num, name: r.name, img: r.part_img_url }); return r; }
       }
     } catch {}
     return null;
@@ -1474,6 +1486,10 @@ function App() {
 
   const persistIndex = next => { setIndex(next); save("bt:index", next); };
   const persistSet = useCallback(rec => {
+    // stamp lastPartAt whenever the found-qty rises (a part was just added) — drives the
+    // "Recently added part" sort. Non-part edits (triage/notes) leave the stamp untouched.
+    const prevRec = load(`bt:set:${rec.setNum}`, null);
+    if (prevRec && foundCount(rec) > foundCount(prevRec)) rec.lastPartAt = Date.now();
     save(`bt:set:${rec.setNum}`, rec);
     setIndex(idx => {
       const next = idx.filter(e => e.setNum !== rec.setNum).concat(indexEntry(rec))
@@ -1511,6 +1527,7 @@ function App() {
   const backFromSet = () => {
     setOpenSetNum(null);
     if (setOrigin === "buys") setTab("buys");
+    else if (setOrigin === "sort") setTab("sort");
     setSetOrigin(null);
   };
   const deleteSet = setNum => {
@@ -1538,6 +1555,7 @@ function App() {
     if (openBuyId === id) setOpenBuyId(null);
   };
   const openSetFromBuys = n => { setAdding(false); setOpenSetNum(n); setSetOrigin("buys"); setTab("sets"); };
+  const openSetFromSort = n => { setAdding(false); setOpenSetNum(n); setSetOrigin("sort"); setTab("sets"); };
   const openMerchFromBuys = id => { save("bt:sv:seg", "merch"); setAdding(false); setOpenSetNum(null); setSetOrigin(null); setOpenMerchId(id); setTab("sets"); };
   // add a set FROM a buy's detail page: pre-link that buy + return there afterwards
   const [addFromBuyId, setAddFromBuyId] = useState(null);
@@ -1575,7 +1593,7 @@ function App() {
             mocs=${mocs} upsertMoc=${upsertMoc} wtbLists=${wtbLists} pushMissingToWtb=${pushMissingToWtb}
             tags=${tags} createTag=${createTag}
             onBack=${backFromSet} onDelete=${() => deleteSet(openSetNum)} />`}
-        ${tab === "sort" && html`<${SortingMode} key="v-sort" index=${index} buys=${buys} persistSet=${persistSet} />`}
+        ${tab === "sort" && html`<${SortingMode} key="v-sort" index=${index} buys=${buys} persistSet=${persistSet} onOpenSet=${openSetFromSort} />`}
         ${tab === "buys" && html`<${Buys} key="v-buys" buys=${buys} index=${index} cats=${cats} merch=${merch} onOpenMerch=${openMerchFromBuys} upsertMerch=${upsertMerch}
           addBuy=${addBuy} updateBuy=${updateBuy} deleteBuy=${deleteBuy} mutateBuys=${mutateBuys} ensureCat=${ensureCat} persistSet=${persistSet}
           onOpenSet=${openSetFromBuys} onAddSet=${addSetFromBuy} openBuyId=${openBuyId} setOpenBuyId=${setOpenBuyId} />`}
@@ -3022,6 +3040,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
     return [...l].sort((a, b) => dir * (
       sort === "pct" ? b.pct - a.pct :
       sort === "value" ? bestVal(b) - bestVal(a) :
+      sort === "recentpart" ? (b.lastPartAt || b.dateAdded || 0) - (a.lastPartAt || a.dateAdded || 0) :
       b.dateAdded - a.dateAdded));
   }, [index, filterM, themeM, sort, sortDir, allTriage, condF, incompleteOnly, buildingOnly, tagM]);
 
@@ -3252,8 +3271,8 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
         onClick=${() => setIncompleteOnly(!incompleteOnly)} />
       <${Chip} key="c-building" label="🔨 Building" color="var(--yellow)" active=${buildingOnly}
         onClick=${() => setBuildingOnly(!buildingOnly)} />
-      <${Chip} key="c-sort" label=${(sort === "pct" ? "Completion" : sort === "value" ? "Value" : "Newest")} color="var(--blue)" active
-        onClick=${() => setSort(s => s === "date" ? "pct" : s === "pct" ? "value" : "date")} />
+      <${Chip} key="c-sort" label=${(sort === "pct" ? "Completion" : sort === "value" ? "Value" : sort === "recentpart" ? "Recent part" : "Newest")} color="var(--blue)" active
+        onClick=${() => setSort(s => s === "date" ? "pct" : s === "pct" ? "value" : s === "value" ? "recentpart" : "date")} />
       <${Chip} key="c-sortdir" label=${sortDir === "asc" ? "↑ Asc" : "↓ Desc"} color="var(--blue)" active=${false}
         onClick=${() => setSortDir(sortDir === "asc" ? "desc" : "asc")} />
       ${filtersActive && html`<${Chip} key="c-clear" label="✕ Clear" color="var(--red)" active=${false}
@@ -3644,7 +3663,14 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   // accordion open state (item 3/5): collapsed by default when the set is New
   const initCond = condOfSet(load(`bt:set:${setNum}`, {}) || {});
   const ACC_IDS = ["value", "triage", "instr", "box", "meta"];
-  const [openAcc, setOpenAcc] = useState(() => new Set(initCond === "new" ? [] : ["triage"]));
+  // open/closed state persists per set (survives tab switches + back-navigation) — collapsing Triage
+  // (or any accordion) now stays collapsed instead of resetting to open every time the set is opened.
+  const openAccKey = `bt:set:openacc:${setNum}`;
+  const [openAcc, setOpenAcc] = useState(() => {
+    const saved = load(openAccKey, null);
+    return new Set(Array.isArray(saved) ? saved : (initCond === "new" ? [] : ["triage"]));
+  });
+  useEffect(() => { save(openAccKey, [...openAcc]); }, [openAcc, openAccKey]);
   const toggleAcc = id => setOpenAcc(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allAccOpen = ACC_IDS.every(id => openAcc.has(id));
   // photo gallery (item 7): catalog image + BrickLink box image (hotlink-tested per set via onerror)
@@ -4412,11 +4438,13 @@ function PartImgViewer({ p, onClose, tags = null, createTag, onRecat }) {
 }
 
 // ---------- Sorting mode ----------
-function SortingMode({ index, buys, persistSet }) {
+function SortingMode({ index, buys, persistSet, onOpenSet }) {
   const [q, setQ] = useState("");
   const [scan, setScan] = useState(false);
   const [tick, setTick] = useState(0); // re-read storage after bumps
   const [finder, setFinder] = useState(null); // null | {stage, part, colors, color, sets, count, chosen, msg}
+  const [viewSet, setViewSet] = useState(null); // {setNum, name} — after a +1, offer to open that set
+  const [blSetNum, setBlSetNum] = useState(""); // typed set number in the printed-part (blfind) flow
   // #1 target set: when set, every scan/search matches ONLY this set and a single match auto-logs +1.
   const [targetNum, setTargetNumRaw] = useState(() => load("bt:sortTarget", null));
   const setTargetNum = n => { setTargetNumRaw(n); n ? save("bt:sortTarget", n) : del("bt:sortTarget"); setFinder(null); };
@@ -4427,10 +4455,15 @@ function SortingMode({ index, buys, persistSet }) {
   useEffect(() => { if (targetNum && !index.some(e => e.setNum === targetNum)) setTargetNum(null); }, [index, targetNum]);
   const target = targetNum ? index.find(e => e.setNum === targetNum) : null;
 
-  // bump first matching part row (non-spare preferred) in a record; returns the row or null
+  // bump first matching part row in a record; returns the row or null. Matches the plain/printed
+  // variant by key (a printed tile in hand fills the base mould a set lists, and vice-versa) so
+  // logging e.g. 2454pb152 still marks the 2454 row a set needs. Prefers the chosen colour, then a
+  // non-spare row, but falls back to any colour/spare so printed parts are never silently omitted.
   const bumpInRec = (rec, partNum, colorId) => {
-    const p = rec.parts.find(x => x.partNumber === partNum && x.colorID === colorId && !x.isSpare && x.qtyFound < x.qtyNeeded)
-      || rec.parts.find(x => x.partNumber === partNum && x.colorID === colorId && x.qtyFound < x.qtyNeeded);
+    const cand = rec.parts.filter(x => x.qtyFound < x.qtyNeeded && partMatches(x, partNum));
+    const byColor = colorId != null ? cand.filter(x => x.colorID === colorId) : [];
+    const pool = byColor.length ? byColor : cand;
+    const p = pool.find(x => !x.isSpare) || pool[0];
     if (p) { p.qtyFound += 1; return p; }
     return null;
   };
@@ -4467,7 +4500,8 @@ function SortingMode({ index, buys, persistSet }) {
       if (!rec) { setFinder({ stage: "error", msg: "Set record missing from storage." }); return; }
       const p = bumpInRec(rec, f.part.part_num, f.color.color_id);
       persistSet(rec); setTick(t => t + 1);
-      setFinder({ stage: "done", msg: p
+      setViewSet({ setNum: rec.setNum, name: rec.name });
+      setFinder({ stage: "done", setNum: rec.setNum, msg: p
         ? `Logged +1 ${f.part.part_num} into ${rec.name} (already tracked).`
         : `${rec.name} is already tracked but doesn’t need that part/colour (or it’s complete).` });
       return;
@@ -4479,7 +4513,37 @@ function SortingMode({ index, buys, persistSet }) {
         buyIds: lastBulk ? [lastBulk.id] : [], notes: "", dateAdded: Date.now(), parts: r.parts, minifigs: r.minifigs || [] };
       const p = bumpInRec(rec, f.part.part_num, f.color.color_id);
       persistSet(rec); setTick(t => t + 1);
-      setFinder({ stage: "done", msg: `Tracked ${rec.name}${lastBulk ? ` → ${lastBulk.label}` : ""}${p ? ` and logged +1 ${f.part.part_num}` : ""}.` });
+      setViewSet({ setNum: rec.setNum, name: rec.name });
+      setFinder({ stage: "done", setNum: rec.setNum, msg: `Tracked ${rec.name}${lastBulk ? ` → ${lastBulk.label}` : ""}${p ? ` and logged +1 ${f.part.part_num}` : ""}.` });
+    } catch (e) { setFinder({ stage: "error", msg: e.message || String(e) }); }
+  }
+
+  // Printed/sticker part Rebrickable can't list (blfind): the user finds the set on BrickLink, then
+  // adds it here BY NUMBER — we fetch its inventory, mark the searched printed part found (matched by
+  // key against the plain mould the set lists), and offer to view it. Works whether or not it's tracked.
+  async function addSetByNumForPart(rawNum, pid) {
+    const sn = normSetNum(rawNum || "");
+    if (!sn) return;
+    if (index.some(e => e.setNum === sn)) {
+      const rec = structuredClone(load(`bt:set:${sn}`, null));
+      if (!rec) { setFinder({ stage: "error", msg: "Set record missing from storage." }); return; }
+      const p = bumpInRec(rec, pid, null);
+      persistSet(rec); setTick(t => t + 1); setBlSetNum("");
+      setViewSet({ setNum: sn, name: rec.name });
+      setFinder({ stage: "done", setNum: sn, msg: p
+        ? `Marked ${pid} found in ${rec.name} (already tracked).`
+        : `${rec.name} is tracked but has no row matching ${pid}.` });
+      return;
+    }
+    setFinder({ stage: "busy", msg: `Adding set ${sn}…` });
+    try {
+      const r = await fetchFullSet(sn, m => setFinder(prev => prev && { ...prev, msg: m }));
+      const rec = { ...r.meta, instructions: "none", triage: "undecided",
+        buyIds: lastBulk ? [lastBulk.id] : [], notes: "", dateAdded: Date.now(), parts: r.parts, minifigs: r.minifigs || [] };
+      const p = bumpInRec(rec, pid, null);
+      persistSet(rec); setTick(t => t + 1); setBlSetNum("");
+      setViewSet({ setNum: sn, name: rec.name });
+      setFinder({ stage: "done", setNum: sn, msg: `Added ${rec.name}${lastBulk ? ` → ${lastBulk.label}` : ""}${p ? ` and marked ${pid} found` : ` (no row matched ${pid})`}.` });
     } catch (e) { setFinder({ stage: "error", msg: e.message || String(e) }); }
   }
 
@@ -4520,6 +4584,7 @@ function SortingMode({ index, buys, persistSet }) {
     if (p && p.qtyFound < p.qtyNeeded) p.qtyFound += 1;
     persistSet(rec);
     setTick(t => t + 1);
+    setViewSet({ setNum, name: rec.name });
   };
 
   // #1 after a scan with a target set: if exactly one incomplete row in the target matches the scanned
@@ -4561,6 +4626,11 @@ function SortingMode({ index, buys, persistSet }) {
 
     ${autoMsg && html`<div class="card" style="color:var(--green);font-size:14px;font-weight:700">${autoMsg}</div>`}
 
+    ${viewSet && onOpenSet && html`<div class="card row" style="gap:10px;align-items:center;border-color:var(--green)">
+      <div class="ellip" style="flex:1;min-width:0;color:var(--green);font-weight:700;font-size:14px">✓ Last added → ${viewSet.name}</div>
+      <button class="chip" style="flex-shrink:0;border-color:var(--blue);color:var(--blue)" onClick=${() => onOpenSet(viewSet.setNum)}>View set ›</button>
+    </div>`}
+
     <input style="font-size:18px;padding:16px 14px" placeholder=${target ? "Scan or type a part to add to this set…" : "Part name, number or colour…"}
       value=${q} onInput=${e => setQ(e.target.value)} />
     <div style="height:12px"></div>
@@ -4583,14 +4653,26 @@ function SortingMode({ index, buys, persistSet }) {
     ${finder?.stage === "blfind" && html`<div>
       <div class="card">
         <div style="font-weight:700;margin-bottom:6px">${finder.pn} is a printed / sticker part</div>
-        <div class="dim" style="font-size:13px;margin-bottom:12px">Rebrickable only indexes the plain mould, so it can't list this part's sets. Look it up on BrickLink to find the set, then add that set from the Sets tab (or set it as your 🎯 Target and scan the part again — printed parts now match the plain tile the set needs).</div>
+        <div class="dim" style="font-size:13px;margin-bottom:12px">Rebrickable can't list this printed part's sets. Look it up on BrickLink to find the set number, then add it below — the part is auto-marked found in that set (whether or not you already track it).</div>
         <a class="btn blue" style="display:block;text-align:center;text-decoration:none" href=${blPartInSets(finder.pn)} target="_blank">🔗 Find sets with this part on BrickLink ↗</a>
+        <div style="height:14px"></div>
+        <${Label}>Know the set number? Add it & mark this part found</${Label}>
+        <div class="row" style="gap:8px">
+          <input style="flex:1" placeholder="e.g. 41145" value=${blSetNum}
+            onInput=${e => setBlSetNum(e.target.value)}
+            onKeyDown=${e => { if (e.key === "Enter" && blSetNum.trim()) addSetByNumForPart(blSetNum, finder.pn); }} />
+          <button class="btn green" style="flex-shrink:0;width:auto;padding:0 16px" disabled=${!blSetNum.trim()}
+            onClick=${() => addSetByNumForPart(blSetNum, finder.pn)}>Add</button>
+        </div>
       </div>
-      <button class="ghost" onClick=${() => setFinder(null)}>Back</button>
+      <button class="ghost" onClick=${() => { setBlSetNum(""); setFinder(null); }}>Back</button>
     </div>`}
     ${finder?.stage === "done" && html`<div>
       <div class="card" style="color:var(--green);font-size:13px;font-weight:600">✓ ${finder.msg}</div>
-      <button class="ghost" onClick=${() => setFinder(null)}>Done</button>
+      <div class="row" style="gap:8px">
+        ${finder.setNum && onOpenSet && html`<button class="btn blue" style="flex:1" onClick=${() => onOpenSet(finder.setNum)}>View set ›</button>`}
+        <button class="ghost" style="flex:1" onClick=${() => setFinder(null)}>Done</button>
+      </div>
     </div>`}
     ${finder?.stage === "colors" && html`<div>
       <div class="card">
@@ -4646,7 +4728,8 @@ function SortingMode({ index, buys, persistSet }) {
         <div style="flex:1;min-width:0">
           <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
           <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber}</div>
-          <div class="ellip" style="font-size:12px;color:var(--yellow);font-weight:700;margin-top:2px">→ ${set.name}</div>
+          <div class="ellip" style="font-size:12px;color:var(--yellow);font-weight:700;margin-top:2px;cursor:pointer"
+            onClick=${() => onOpenSet?.(set.setNum)}>→ ${set.name}${onOpenSet ? " ›" : ""}</div>
         </div>
         <div class="dim mono" style="font-size:13px">${p.qtyFound}/${p.qtyNeeded}</div>
         <button class="step plus" style="width:58px;height:52px;font-size:17px" onClick=${() => bump(set.setNum, p.id)}>+1</button>
