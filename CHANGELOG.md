@@ -9,6 +9,18 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.54.0 — 2026-06-27
+
+Part-hunting workflow pass (Sorting mode).
+
+- **Sorting → "View set" after adding a part.** Every +1 (search, scan auto-log, or the set-finder) now drops a green **"✓ Last added → \<set\> · View set ›"** bar, and each hit row's set name is **tappable** — jump straight into the set you just fed a part to. ◁ back returns to Sorting where you left off.
+- **Sets → "Recent part" sort.** New sort option (works with the existing **↑/↓ Asc/Desc**) orders sets by **when you last added a part** to them, so the set you're actively filling floats to the top. Sets you haven't touched fall back to date added.
+- **Set detail accordions remember collapsed/expanded state per set.** Collapsing **Triage** (or Value / Instructions / Box / Buys & notes) now **stays collapsed** instead of springing back open every time you reopen the set.
+- **Printed/sticker parts no longer mis-resolve to a generic mould.** A printed id (e.g. `2454pb152`) only resolves to a Rebrickable part on an **exact BrickLink-id match** (or a single unambiguous hit) — it will no longer list a plain mould's sets by mistake.
+- **Add the set in-app when a printed part can't be listed.** When Rebrickable can't surface a printed part's sets, the finder now lets you **type the set number** (found via the BrickLink link) and **Add** it on the spot — it fetches the inventory, **marks that printed part found** (matched to the plain tile the set lists), and offers **View set**. Marking a printed part also works when logging into a set you already track.
+
+-----
+
 ## v0.53.0 — 2026-06-24
 
 - **Fixed for real: WTB (and MOC) parts lists stuck on "Fetching images…".** Opening a list no longer kicks off a background **network** sweep (the real cause — on a big/uncached list it kept the spinner up, and navigating away before it finished meant it re-swept every open). Lists now **fill images instantly from the local catalog only** — no spinner, no hang.
