@@ -9,6 +9,17 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.55.0 — 2026-06-28
+
+Set parts list — optional second grouping level.
+
+- **New "Sub" chip on the set parts list.** Sits next to **Group** and adds a second grouping level that splits each top-level group by the **other** dimension:
+  - **Group: Colour** (or **Group: Exact**) → each colour sub-grouped by **part type** (🧱 Bricks, ▭ Plates, ⬛ Tiles…).
+  - **Group: Type** → each part type sub-grouped by **colour bucket** (Blue, Gray…).
+  - Sub-headers carry their own **have/need** count. Buckets reuse the existing colour-group / part-type buckets. Off by default; the choice persists (`bt:partsubgroup`).
+
+-----
+
 ## v0.54.0 — 2026-06-27
 
 Part-hunting workflow pass (Sorting mode).
