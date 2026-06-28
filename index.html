@@ -89,8 +89,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.54.0";
+const APP_VERSION = "0.55.0";
 const CHANGELOG = [
+  ["0.55.0", "2026-06-28", [
+    "Set parts list — optional second grouping level. A new “Sub” chip (next to Group) splits each top-level group by the OTHER dimension: with Group: Colour (or Exact) it sub-groups each colour by part type (🧱 Bricks, ▭ Plates…); with Group: Type it sub-groups each part type by colour bucket (Blue, Gray…). Sub-headers show their own have/need count. Off by default; the choice persists (bt:partsubgroup).",
+  ]],
   ["0.54.0", "2026-06-27", [
     "Sorting mode: after every +1 (search, scan-auto-log, or the set-finder) a green “✓ Last added → <set> · View set ›” bar appears, and each hit row's set name is now tappable — jump straight into the set you just added a part to, then ◁ back returns to Sorting.",
     "Sets: new “Recent part” sort (with the existing ↑/↓ Asc/Desc) orders sets by when you last added a part to them — the set you're actively filling rises to the top. Falls back to date added for sets you haven't touched.",
@@ -3658,8 +3661,12 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const [moveP, setMoveP] = useState(null); // part row being pushed to a MOC
   const [bulkMoc, setBulkMoc] = useState(false); // #7 bulk-move selected parts to a MOC (picker open)
   const [savedMsg2, setSavedMsg2] = useState(""); // transient "added to want list" confirmation
-  const [groupMode, setGroupModeRaw] = useState(() => load("bt:partgroup", "group")); // group | exact
+  const [groupMode, setGroupModeRaw] = useState(() => load("bt:partgroup", "group")); // group | type | exact
   const setGroupMode = v => { setGroupModeRaw(v); save("bt:partgroup", v); };
+  // optional second level: split each top-level group by the OTHER dimension (Colour→by Part type,
+  // Type→by Colour bucket). Bucketed, non-collapsible sub-headers. Persists globally.
+  const [subGroup, setSubGroupRaw] = useState(() => load("bt:partsubgroup", false));
+  const setSubGroup = v => { setSubGroupRaw(v); save("bt:partsubgroup", v); };
   // accordion open state (item 3/5): collapsed by default when the set is New
   const initCond = condOfSet(load(`bt:set:${setNum}`, {}) || {});
   const ACC_IDS = ["value", "triage", "instr", "box", "meta"];
@@ -3846,6 +3853,21 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   </div>`;
 
   const myTags = resolveTags(tags, rec.tags);
+  // shared part-row renderer (reused by the flat and sub-grouped layouts)
+  const renderRow = p => html`<${PartRow} key=${p.id} p=${p} bump=${bump}
+    alloc=${rowAlloc.get(p.id)} onMove=${() => setMoveP(p)} onView=${() => setViewPart(p)} mode=${logMode}
+    selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)}
+    recent=${lastAct && lastAct.id === p.id ? lastAct : null} />`;
+  // split a group's parts by the OTHER dimension for the second level (bucketed). Returns sorted
+  // [subKey, subList] entries; the incoming list is already sorted so each bucket keeps that order.
+  const subOf = list => {
+    const byColour = groupMode === "type"; // primary is part-type → sub-group by colour bucket
+    const keyOf = p => byColour ? colorGroup(p.colorName) : partType(p.partName, p.partNumber);
+    const rank = byColour ? groupRank : typeRank;
+    const m = new Map();
+    for (const p of list) { const k = keyOf(p); if (!m.has(k)) m.set(k, []); m.get(k).push(p); }
+    return [...m.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
+  };
   return html`<div>
     <${Header} title=${rec.name} sub=${html`<span>${rec.setNum} · ${rec.year} · <a href=${instrHref(rec.setNum)} target="_blank">📖 Instructions ↗</a></span>`} onBack=${onBack} />
     <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
@@ -4052,6 +4074,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
         <${Chip} label="Spares" color="var(--dim)" active=${showSpares} onClick=${() => setShowSpares(v => !v)} />
         <${Chip} label=${groupMode === "group" ? "Group: Colour" : groupMode === "type" ? "Group: Type" : "Group: Exact"} color="var(--blue)" active
           onClick=${() => setGroupMode(groupMode === "group" ? "type" : groupMode === "type" ? "exact" : "group")} />
+        <${Chip} label=${subGroup ? (groupMode === "type" ? "Sub: Colour" : "Sub: Part") : "Sub: off"} color="var(--purple)" active=${subGroup}
+          onClick=${() => setSubGroup(!subGroup)} />
         <${Chip} label=${openColors.size >= groups.length + 1 && groups.length > 0 ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false}
           onClick=${() => setOpenColors(saveOpenColors(openColors.size >= groups.length + 1 ? new Set() : new Set(["__acc", ...groups.map(g => g[0])])))} />
         <${Chip} label="↺ Reset" color="var(--red)" active=${false} onClick=${() => setConfirmReset(v => !v)} />
@@ -4096,10 +4120,20 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
             <span class="dim">${open ? "▾" : "▸"}</span>
           </span>
         </button>
-        ${open && html`<div style="margin-top:6px">${list.map(p => html`<${PartRow} key=${p.id} p=${p} bump=${bump}
-          alloc=${rowAlloc.get(p.id)} onMove=${() => setMoveP(p)} onView=${() => setViewPart(p)} mode=${logMode}
-          selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)}
-          recent=${lastAct && lastAct.id === p.id ? lastAct : null} />`)}</div>`}
+        ${open && (subGroup
+          ? html`<div style="margin-top:6px">${subOf(list).map(([sk, sl]) => {
+              const sc = sl.filter(p => inclSpares || !p.isSpare);
+              const sf = sc.reduce((a, p) => a + Math.min(p.qtyFound, p.qtyNeeded), 0);
+              const st = sc.reduce((a, p) => a + p.qtyNeeded, 0);
+              return html`<div style="margin:2px 0 6px">
+                <div class="row" style="justify-content:space-between;padding:3px 6px 3px 10px;border-left:2px solid var(--line);margin-bottom:4px">
+                  <span class="dim" style="font-size:11px;font-weight:700">${sk} · ${sl.length}</span>
+                  <span class="mono" style=${`font-size:11px;font-weight:700;color:${sf >= st ? "var(--green)" : "var(--dim)"}`}>${sf}/${st}</span>
+                </div>
+                ${sl.map(renderRow)}
+              </div>`;
+            })}</div>`
+          : html`<div style="margin-top:6px">${list.map(renderRow)}</div>`)}
       </div>`;
     })}
 
