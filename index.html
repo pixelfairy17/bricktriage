@@ -26,6 +26,10 @@
   .mono { font-family:ui-monospace,Menlo,monospace; }
   .dim { color:var(--dim); }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
+  /* Sticky category headers in the (long) set parts list. Each header sticks within its OWN group
+     box, so scrolling into the next group slides the previous header out and pins the next one —
+     you always see which category you're in, and the header stays one tap from collapsing. */
+  .grouphdr { position:sticky; top:0; z-index:5; }
   .label { font-family:ui-monospace,Menlo,monospace; font-size:11px; letter-spacing:1.5px;
     color:var(--dim); text-transform:uppercase; margin-bottom:7px; }
   input, select, textarea { width:100%; background:var(--panel2); border:1px solid var(--line);
@@ -89,8 +93,14 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.55.0";
+const APP_VERSION = "0.57.0";
 const CHANGELOG = [
+  ["0.57.0", "2026-06-30", [
+    "Set parts list — category headers are now STICKY while you scroll a long list. The colour / part-type group header (and Instructions & Box) pins to the top so you always see which category you're in and can collapse it without scrolling back up. With several groups open, scrolling into the next one slides the previous header out and pins the next — iOS contacts-list style.",
+  ]],
+  ["0.56.0", "2026-06-30", [
+    "Set parts list, Group: Type — parts inside each bucket now order by HEIGHT first (then width, length). Previously the bucket sorted by part name as plain text, so a tall \"Brick 1 x 1 x 3\" sorted to the top (before \"1 x 2\") and a \"1 x 2 x 2\" landed between \"1 x 1\" and \"1 x 2\". Now every standard 1-high brick sits together, then the 1 1/3-, 2-, 3-high bands in turn. Fractional heights (e.g. 2/3) are parsed too.",
+  ]],
   ["0.55.0", "2026-06-28", [
     "Set parts list — optional second grouping level. A new “Sub” chip (next to Group) splits each top-level group by the OTHER dimension: with Group: Colour (or Exact) it sub-groups each colour by part type (🧱 Bricks, ▭ Plates…); with Group: Type it sub-groups each part type by colour bucket (Blue, Gray…). Sub-headers show their own have/need count. Off by default; the choice persists (bt:partsubgroup).",
   ]],
@@ -557,6 +567,36 @@ function partType(name, partNum) {
   return "✨ Other";
 }
 const typeRank = g => { const i = PART_TYPE_DISPLAY.indexOf(g); return String(i < 0 ? 98 : i).padStart(2, "0"); };
+
+// ---- dimension-aware ordering inside a "Group: Type" bucket ----
+// Parse the LEGO "W x L [x H]" out of a part name so we can sort by HEIGHT first.
+// Without this, an alphabetical name sort buries height: "Brick 1 x 1 x 3" lands
+// before "Brick 1 x 2" (string "1 x 1 x 3" < "1 x 2"), and a "1 x 2 x 2" gets mixed
+// between "1 x 1" and "1 x 2". Sorting height→width→length keeps each height band
+// together (standard 1-high bricks first, then 1 1/3, 2, 3… high).
+const _dimNum = s => { // handles "2", "2.5", "2/3", "1 1/3"
+  s = s.trim();
+  let m = s.match(/^(\d+)\s+(\d+)\/(\d+)$/); if (m) return +m[1] + +m[2] / +m[3];
+  m = s.match(/^(\d+)\/(\d+)$/); if (m) return +m[1] / +m[2];
+  return parseFloat(s);
+};
+const _DIM_TOKEN = "\\d+\\s+\\d+\\/\\d+|\\d+\\/\\d+|\\d+(?:\\.\\d+)?"; // mixed "1 1/3" → fraction "2/3" → plain/decimal
+const _DIM_RE = new RegExp(`(${_DIM_TOKEN})\\s*x\\s*(${_DIM_TOKEN})(?:\\s*x\\s*(${_DIM_TOKEN}))?`, "i");
+const partDims = name => { // → {w,l,h} or null; missing 3rd number ⇒ standard height (1)
+  const m = (name || "").match(_DIM_RE);
+  return m ? { w: _dimNum(m[1]), l: _dimNum(m[2]), h: m[3] != null ? _dimNum(m[3]) : 1 } : null;
+};
+// Comparator for two parts in the same type bucket: height, then width, length, then
+// name/colour. `nameOf` adapts to the row shape (set rows use partName, MOC/WTB use name).
+const cmpByDims = (nameOf, colOf) => (a, b) => {
+  const da = partDims(nameOf(a)), db = partDims(nameOf(b));
+  if (da && db) {
+    if (da.h !== db.h) return da.h - db.h;
+    if (da.w !== db.w) return da.w - db.w;
+    if (da.l !== db.l) return da.l - db.l;
+  } else if (da || db) return da ? -1 : 1; // dimensioned parts lead, the rest trail
+  return `${nameOf(a)}|${colOf(a)}`.localeCompare(`${nameOf(b)}|${colOf(b)}`);
+};
 
 // part value heuristic — avg price guide. Ordered high→low; first hit wins (name OR colour).
 // Keyword map is a first-guess like COLOR_GROUPS — refine from real use.
@@ -3788,7 +3828,9 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       for (const [, l] of entries) l.sort((a, b) => `${a.colorName}|${a.partName}`.localeCompare(`${b.colorName}|${b.partName}`));
     } else if (groupMode === "type") {
       entries.sort((a, b) => typeRank(a[0]).localeCompare(typeRank(b[0])));
-      for (const [, l] of entries) l.sort((a, b) => `${a.partName}|${a.colorName}`.localeCompare(`${b.partName}|${b.colorName}`));
+      // within a type bucket, order by HEIGHT first so same-height parts sit together
+      const cmp = cmpByDims(p => p.partName, p => p.colorName);
+      for (const [, l] of entries) l.sort(cmp);
     } else {
       entries.sort((a, b) => a[0].localeCompare(b[0]));
     }
@@ -4112,7 +4154,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       const f = counted.reduce((a, p) => a + Math.min(p.qtyFound, p.qtyNeeded), 0);
       const t = counted.reduce((a, p) => a + p.qtyNeeded, 0);
       return html`<div style="margin-bottom:8px">
-        <button class="row" onClick=${() => toggleColor(color)}
+        <button class="row grouphdr" onClick=${() => toggleColor(color)}
           style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
           <span class="label" style="margin:0">${color} · ${list.length}</span>
           <span class="row" style="gap:10px">
@@ -4141,7 +4183,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       const accOpen = q.trim().length > 0 || openColors.has("__acc");
       const accHave = (rec.instructions !== "none" ? 1 : 0) + (rec.box?.has ? 1 : 0);
       return html`<div style="margin-bottom:8px">
-        <button class="row" onClick=${() => toggleColor("__acc")}
+        <button class="row grouphdr" onClick=${() => toggleColor("__acc")}
           style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
           <span class="label" style="margin:0">📖 Instructions & Box · 2</span>
           <span class="row" style="gap:10px">

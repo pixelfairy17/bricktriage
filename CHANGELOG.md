@@ -9,6 +9,27 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.57.0 — 2026-06-30
+
+Set parts list — **sticky category headers**.
+
+- When a parts list is long and you scroll inside it, the **colour / part-type group header** now **pins to the top** of the view, so you always see which category you're in — and it stays one tap from collapsing.
+- With more than one group open, scrolling into the next group **slides the previous header out and pins the next one** (iOS contacts-list behaviour). Each header sticks within its own group, so the hand-off happens exactly where the next group begins.
+- Also applies to the **Instructions & Box** group at the foot of the list.
+
+-----
+
+## v0.56.0 — 2026-06-30
+
+Set parts list, **Group: Type** — order each bucket by **height** first.
+
+- Inside a part-type bucket, rows now sort by **height → width → length** (then name/colour), instead of by part name as plain text.
+- The old name-text sort buried height: a tall **Brick 1 x 1 x 3** sorted to the top (string `1 x 1 x 3` < `1 x 2`), and a **1 x 2 x 2** landed in between **1 x 1** and **1 x 2**.
+- Now every standard 1-high brick sits together, then the 1 1/3-, 2-, 3-high bands in turn. The "W x L x H" dimensions are parsed from the part name, including fractional heights (e.g. `2/3`).
+- Parts with no parseable dimensions trail the dimensioned ones (sorted by name). When **Sub** grouping is on, each colour sub-bucket keeps this height order.
+
+-----
+
 ## v0.55.0 — 2026-06-28
 
 Set parts list — optional second grouping level.
