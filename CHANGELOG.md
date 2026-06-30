@@ -9,6 +9,19 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.58.0 — 2026-06-30
+
+**📸 Visual match (beta)** — photo-tag parts into a set instead of scrolling the checklist.
+
+- New **📸 Visual match** button on a set's parts list opens a photo "board."
+- **Take / choose a photo** of your loose parts, then **drag a box** around each part. The crop is sent to Brickognize and **matched against this set's inventory** (base-part matched, so a printed/sticker variant still matches the plain mould) — a hit **logs +1** on the matching row and marks it **📸**. Constraining to the set's BOM makes matches far more reliable than an open-ended scan.
+- **Multi-tag** per photo, each box colour-coded by state (✓ matched · ? pick colour · ∅ not in set · ! error). A part the set holds in **more than one still-needed colour** asks which.
+- **+ Add another photo** keeps the same set and **accumulates** — photograph the surface, then take more shots as you pull the build apart (a single photo can't see interior parts).
+- Tags are **per-session** (only the +1s persist). A **miss** can be picked from the set by hand. Delete a box to undo its +1.
+- Reuses the existing Brickognize pipeline + Rebrickable inventory; no new keys, all client-side.
+
+-----
+
 ## v0.57.0 — 2026-06-30
 
 Set parts list — **sticky category headers**.

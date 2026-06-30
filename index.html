@@ -93,8 +93,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.57.0";
+const APP_VERSION = "0.58.0";
 const CHANGELOG = [
+  ["0.58.0", "2026-06-30", [
+    "📸 Visual match (beta) — a new button on a set's parts list lets you photo-tag parts instead of scrolling the checklist. Take a photo of your loose parts, drag a box around each one, and the crop is matched against THIS set's inventory (printed/sticker variants still match the plain mould) — a hit logs +1 on the row and marks it 📸. Several tags per photo; a part that's in the set in more than one still-needed colour asks which. ‘+ Add another photo’ keeps the same set and accumulates, so you photograph the surface, then take more shots as you pull the build apart (interior parts a single photo can't see). Tags are per-session — only the +1s persist. A miss can be picked from the set by hand.",
+  ]],
   ["0.57.0", "2026-06-30", [
     "Set parts list — category headers are now STICKY while you scroll a long list. The colour / part-type group header (and Instructions & Box) pins to the top so you always see which category you're in and can collapse it without scrolling back up. With several groups open, scrolling into the next one slides the previous header out and pins the next — iOS contacts-list style.",
   ]],
@@ -3731,6 +3734,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     setSelIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
   const [viewPart, setViewPart] = useState(null); // #3 full-size part image
+  const [visual, setVisual] = useState(false); // 📸 visual photo-tagging match open
+  const [visualSeen, setVisualSeen] = useState(() => new Set()); // part-row ids matched via photo this session (📸 marker)
   const toggleColor = c => setOpenColors(prev => saveOpenColors((() => {
     const n = new Set(prev); n.has(c) ? n.delete(c) : n.add(c); return n;
   })()));
@@ -3898,7 +3903,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   // shared part-row renderer (reused by the flat and sub-grouped layouts)
   const renderRow = p => html`<${PartRow} key=${p.id} p=${p} bump=${bump}
     alloc=${rowAlloc.get(p.id)} onMove=${() => setMoveP(p)} onView=${() => setViewPart(p)} mode=${logMode}
-    selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)}
+    selected=${selIds.has(p.id)} onSel=${() => toggleSelPart(p.id)} seen=${visualSeen.has(p.id)}
     recent=${lastAct && lastAct.id === p.id ? lastAct : null} />`;
   // split a group's parts by the OTHER dimension for the second level (bucketed). Returns sorted
   // [subKey, subList] entries; the incoming list is already sorted so each bucket keeps that order.
@@ -4122,6 +4127,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
           onClick=${() => setOpenColors(saveOpenColors(openColors.size >= groups.length + 1 ? new Set() : new Set(["__acc", ...groups.map(g => g[0])])))} />
         <${Chip} label="↺ Reset" color="var(--red)" active=${false} onClick=${() => setConfirmReset(v => !v)} />
       </div>
+      ${rec.parts.length > 0 && html`<button class="ghost" style="margin-top:10px" onClick=${() => setVisual(true)}>📸 Visual match — photo &amp; tag parts</button>`}
       ${confirmReset && html`<div class="row" style="gap:8px;margin-top:10px;align-items:center">
         <span class="dim" style="font-size:12px;flex:1">Reset every part count to recount? (back to 0, or the MOC-allocated floor)</span>
         <button class="ghost" style="width:auto;padding:8px 12px" onClick=${() => setConfirmReset(false)}>Cancel</button>
@@ -4274,6 +4280,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       onSetDefault=${i => change(r => { r.imgDefault = photos[i].kind === "box" ? "box" : "rb"; return r; })}
       onClose=${() => setGalleryAt(null)} />`}
     ${viewPart && html`<${PartImgViewer} p=${viewPart} tags=${tags} createTag=${createTag} onRecat=${() => setRecatTick(t => t + 1)} onClose=${() => setViewPart(null)} />`}
+    ${visual && html`<${VisualMatchModal} rec=${rec} onLog=${(id, d) => bump(id, d)} onSeen=${id => setVisualSeen(s => { const n = new Set(s); n.add(id); return n; })} onClose=${() => setVisual(false)} />`}
     ${tagPick && html`<${TagPickerSheet} title="Set tags" sub=${`${rec.name} · ${rec.setNum}`}
       tags=${tags} selected=${rec.tags || []} createTag=${createTag}
       onChange=${ids => change(r => { r.tags = ids; return r; })} onClose=${() => setTagPick(false)} />`}
@@ -4431,7 +4438,7 @@ function BulkMocPicker({ mocs, upsertMoc, count, onPick, onClose }) {
   </div></${Portal}>`;
 }
 
-function PartRow({ p, bump, alloc, onMove, onView, selected = false, onSel, mode = "find", recent = null }) {
+function PartRow({ p, bump, alloc, onMove, onView, selected = false, onSel, mode = "find", recent = null, seen = false }) {
   const isRem = mode === "remaining";
   const full = p.qtyFound >= p.qtyNeeded;
   const done = full;
@@ -4456,7 +4463,7 @@ function PartRow({ p, bump, alloc, onMove, onView, selected = false, onSel, mode
       ${checkbox}
       ${imgEl}
       <div style="flex:1;min-width:0" onClick=${() => bump(p.id, full ? -p.qtyNeeded : p.qtyNeeded - p.qtyFound)}>
-        <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
+        <div class="clamp2" style="font-size:13px;line-height:1.25">${seen ? html`<span title="Matched via photo this session">📸 </span>` : ""}${p.partName}</div>
         <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.partNumber} · <span style="color:var(--yellow)">${partRate(p).label}</span>${spareTag}</div>
         ${allocLine}
       </div>
@@ -4510,6 +4517,150 @@ function PartImgViewer({ p, onClose, tags = null, createTag, onRecat }) {
     </div>
     ${pick && html`<${TagPickerSheet} title="Part tags" sub=${`${p.partName || ""} · ${p.partNumber}`}
       tags=${tags} selected=${ids} onChange=${setTagsFor} createTag=${createTag} onClose=${() => setPick(false)} />`}
+  </div></${Portal}>`;
+}
+
+// ---------- visual parts match (photo tagging) ----------
+// Drag a box over a part in a photo → crop that region → Brickognize → match the crop against THIS
+// set's inventory (base-part matched, so a printed/sticker variant still matches the plain mould) →
+// +1 the matching row. Constraining candidates to the set's BOM makes each hit far more reliable than
+// an open-ended scan. Multi-tag per photo; "Add another photo" keeps the same set and ACCUMULATES
+// (photograph the surface, then more photos as the build comes apart). Tags are ephemeral — only the
+// +1s persist. Colour auto-binds to the set's row; a part with several still-needed colours asks.
+const clamp01 = v => Math.max(0, Math.min(1, v));
+function VisualMatchModal({ rec, onLog, onSeen, onClose }) {
+  const [photo, setPhoto] = useState(null); // { url, w, h } of the current board
+  const [tags, setTags] = useState([]);     // [{ id, fx,fy,fw,fh, state, row, name, img, note }]
+  const [draw, setDraw] = useState(null);   // live drag rect (fractions) while dragging
+  const [pickFor, setPickFor] = useState(null); // tag id whose part is being chosen by hand
+  const [pickQ, setPickQ] = useState("");
+  const [err, setErr] = useState("");
+  const fileRef = useRef(null), boardRef = useRef(null), dragRef = useRef(null), bmp = useRef(null), seq = useRef(0);
+  useEffect(() => () => bmp.current?.close?.(), []);
+  useEffect(() => { fileRef.current?.click(); }, []); // prompt for the first photo on open
+
+  const { found, total, pct } = completion(rec.parts);
+
+  async function loadPhoto(file) {
+    setErr("");
+    try {
+      const bitmap = await createImageBitmap(file);
+      bmp.current?.close?.(); bmp.current = bitmap;
+      const url = await blobToDataURL(file);
+      setPhoto({ url, w: bitmap.width, h: bitmap.height });
+      setTags([]); setDraw(null); setPickFor(null); // new board → fresh tags (the +1s already persisted)
+    } catch { setErr("Couldn't read that photo — try another (HEIC may need converting to JPEG)."); }
+  }
+
+  // crop the tagged rect (fractions of the natural image) → small jpeg for Brickognize
+  async function cropBlob(t) {
+    const b = bmp.current; if (!b) return null;
+    const sw = Math.max(1, t.fw * b.width), sh = Math.max(1, t.fh * b.height);
+    const c = document.createElement("canvas");
+    c.width = Math.round(sw); c.height = Math.round(sh);
+    c.getContext("2d").drawImage(b, t.fx * b.width, t.fy * b.height, sw, sh, 0, 0, c.width, c.height);
+    return new Promise(r => c.toBlob(r, "image/jpeg", 0.9));
+  }
+  // first Brickognize candidate that actually exists in this set wins; else the top guess (rows:[])
+  function matchToSet(items) {
+    for (const it of (items || [])) {
+      const rows = rec.parts.filter(p => !isExcludedPart(p) && !p.isSpare && partMatches(p, it.id));
+      if (rows.length) return { name: it.name, img: it.img_url, rows };
+    }
+    const top = (items || [])[0];
+    return top ? { name: top.name, img: top.img_url, rows: [] } : null;
+  }
+  const bindTag = (tagId, row, img) => { // bind + log exactly once
+    onLog(row.id, 1); onSeen(row.id);
+    setTags(prev => prev.map(t => t.id === tagId ? { ...t, state: "matched", row, name: row.partName, img: t.img || img || row.img } : t));
+    setPickFor(null);
+  };
+  async function identify(tag) {
+    try {
+      const crop = await cropBlob(tag);
+      if (!crop) throw new Error("crop failed");
+      const j = await brickognize(await downscale(crop, 512));
+      const m = matchToSet((j.items || []).slice(0, 8));
+      if (!m || !m.rows.length) { setTags(prev => prev.map(t => t.id === tag.id ? { ...t, state: "none", name: m?.name || "", img: m?.img } : t)); return; }
+      const incomplete = m.rows.filter(p => p.qtyFound < p.qtyNeeded);
+      if (incomplete.length > 1) { setTags(prev => prev.map(t => t.id === tag.id ? { ...t, state: "choose", rows: incomplete, name: m.name, img: m.img } : t)); return; }
+      bindTag(tag.id, incomplete[0] || m.rows[0], m.img);
+    } catch (e) { setTags(prev => prev.map(t => t.id === tag.id ? { ...t, state: "error", note: String(e.message || e) } : t)); }
+  }
+  const delTag = t => { if (t.state === "matched" && t.row) onLog(t.row.id, -1); setTags(prev => prev.filter(x => x.id !== t.id)); };
+
+  // pointer-drag a box over the board (fractions of the rendered image, which === natural via the crop math)
+  const ptFrac = e => { const r = boardRef.current.getBoundingClientRect(); return { x: clamp01((e.clientX - r.left) / r.width), y: clamp01((e.clientY - r.top) / r.height) }; };
+  const onDown = e => { if (!photo) return; e.currentTarget.setPointerCapture?.(e.pointerId); const p = ptFrac(e); dragRef.current = p; setDraw({ fx: p.x, fy: p.y, fw: 0, fh: 0 }); };
+  const onMove = e => { if (!dragRef.current) return; const p = ptFrac(e), s = dragRef.current; setDraw({ fx: Math.min(s.x, p.x), fy: Math.min(s.y, p.y), fw: Math.abs(p.x - s.x), fh: Math.abs(p.y - s.y) }); };
+  const onUp = () => {
+    const d = draw; dragRef.current = null; setDraw(null);
+    if (!d || d.fw < 0.03 || d.fh < 0.03) return; // ignore stray taps / too-small boxes
+    const tag = { id: "t" + (++seq.current), fx: d.fx, fy: d.fy, fw: d.fw, fh: d.fh, state: "busy" };
+    setTags(prev => [...prev, tag]); identify(tag);
+  };
+
+  const STATE_COLOR = { busy: "var(--yellow)", matched: "var(--green)", choose: "var(--blue)", none: "var(--purple)", error: "var(--red)" };
+  const manualList = pickFor && (() => {
+    const ql = pickQ.trim().toLowerCase();
+    return rec.parts
+      .filter(p => !isExcludedPart(p) && !p.isSpare && (!ql || (p.partName + " " + p.partNumber + " " + p.colorName).toLowerCase().includes(ql)))
+      .sort((a, b) => (a.qtyFound < a.qtyNeeded ? 0 : 1) - (b.qtyFound < b.qtyNeeded ? 0 : 1))
+      .slice(0, 40);
+  })();
+
+  return html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div class="sheet">
+      <${Header} title="📸 Visual match" sub=${`${rec.name} · ${found}/${total} · ${pct}%`} onBack=${onClose} />
+      <input ref=${fileRef} type="file" accept="image/*" style="display:none"
+        onChange=${e => { const f = e.target.files?.[0]; if (f) loadPhoto(f); e.target.value = ""; }} />
+      ${err && html`<div class="card" style="color:var(--red);font-size:13px">${err}</div>`}
+      ${!photo && html`<button class="btn" onClick=${() => fileRef.current?.click()}>Take / choose a photo</button>
+        <div class="dim" style="font-size:12px;margin-top:10px">Spread the loose parts out, then drag a box around each one to match it against this set. Interior parts you can't see yet — add another photo as you take the build apart.</div>`}
+      ${photo && html`
+        <div style="text-align:center;margin-bottom:8px">
+          <div ref=${boardRef} style="position:relative;display:inline-block;line-height:0;max-width:100%;touch-action:none;user-select:none"
+            onPointerDown=${onDown} onPointerMove=${onMove} onPointerUp=${onUp} onPointerCancel=${onUp}>
+            <img src=${photo.url} draggable="false" style="display:block;max-width:100%;max-height:58vh;border-radius:10px"/>
+            ${tags.map(t => html`<div key=${t.id} style=${`position:absolute;left:${t.fx * 100}%;top:${t.fy * 100}%;width:${t.fw * 100}%;height:${t.fh * 100}%;border:2px solid ${STATE_COLOR[t.state] || "var(--line)"};border-radius:4px;box-shadow:0 0 0 1px rgba(0,0,0,.4)`}>
+              <span style=${`position:absolute;top:-9px;left:-2px;font-size:10px;line-height:1;padding:1px 3px;border-radius:4px;font-weight:800;background:${STATE_COLOR[t.state] || "var(--line)"};color:#1C1A17`}>${t.state === "busy" ? "…" : t.state === "matched" ? "✓" : t.state === "choose" ? "?" : t.state === "none" ? "∅" : "!"}</span>
+            </div>`)}
+            ${draw && html`<div style=${`position:absolute;left:${draw.fx * 100}%;top:${draw.fy * 100}%;width:${draw.fw * 100}%;height:${draw.fh * 100}%;border:2px dashed var(--yellow);border-radius:4px`}></div>`}
+          </div>
+          <div class="dim" style="font-size:11px;margin-top:4px;line-height:1.3">Drag a box around one part. ✓ matched & logged · ? pick colour · ∅ not in this set.</div>
+        </div>
+        ${tags.length > 0 && html`<div style="margin-bottom:8px">${tags.map(t => {
+          const c = STATE_COLOR[t.state] || "var(--line)";
+          return html`<div key=${t.id} style=${`border:1px solid ${c};border-radius:10px;padding:8px;margin-bottom:6px`}>
+            <div class="row" style="gap:8px">
+              ${(t.img || t.row?.img) ? html`<${Thumb} src=${t.img || t.row?.img} size=${38} />` : html`<div class="partimg" style="width:38px;height:38px;background:var(--panel2);display:flex;align-items:center;justify-content:center">📦</div>`}
+              <div style="flex:1;min-width:0">
+                ${t.state === "busy" && html`<div class="dim" style="font-size:13px">Identifying…</div>`}
+                ${t.state === "matched" && html`<div style="font-size:13px;font-weight:600" class="clamp2">${t.row.partName}</div>
+                  <div class="dim mono" style="font-size:11px">${t.row.colorName} · ${t.row.partNumber} · <span style="color:var(--green);font-weight:700">+1</span></div>`}
+                ${t.state === "choose" && html`<div style="font-size:12px;font-weight:700;margin-bottom:4px">Which colour? <span class="dim">(${t.name})</span></div>
+                  <div class="row" style="gap:6px;flex-wrap:wrap">${t.rows.map(r => html`<button key=${r.id} class="chip" style="border-color:var(--blue);color:var(--blue)" onClick=${() => bindTag(t.id, r, t.img)}>${r.colorName} ${r.qtyFound}/${r.qtyNeeded}</button>`)}</div>`}
+                ${t.state === "none" && html`<div style="font-size:13px">${t.name ? html`Looks like <b>${t.name}</b> — not in this set.` : "No match in this set."}</div>
+                  <button class="chip" style="border-color:var(--purple);color:var(--purple);margin-top:4px" onClick=${() => { setPickFor(t.id); setPickQ(""); }}>Pick from set ›</button>`}
+                ${t.state === "error" && html`<div style="font-size:12px;color:var(--red)">${t.note}</div>
+                  <button class="chip" style="border-color:var(--red);color:var(--red);margin-top:4px" onClick=${() => { setTags(prev => prev.map(x => x.id === t.id ? { ...x, state: "busy" } : x)); identify(t); }}>Retry</button>`}
+              </div>
+              <button class="step" style="width:30px;height:30px;font-size:13px;flex-shrink:0" onClick=${() => delTag(t)}>✕</button>
+            </div>
+            ${pickFor === t.id && html`<div style="margin-top:8px">
+              <input placeholder="Filter this set's parts" value=${pickQ} onInput=${e => setPickQ(e.target.value)} />
+              <div style="max-height:200px;overflow-y:auto;margin-top:6px">${manualList.map(r => html`<div key=${r.id} class="row" style="gap:8px;padding:6px;border-bottom:1px solid var(--line);cursor:pointer" onClick=${() => bindTag(t.id, r)}>
+                <${Thumb} src=${r.img} size=${30} />
+                <div style="flex:1;min-width:0"><div class="ellip" style="font-size:12px">${r.partName}</div><div class="dim mono" style="font-size:10px">${r.colorName} · ${r.qtyFound}/${r.qtyNeeded}</div></div>
+              </div>`)}</div>
+            </div>`}
+          </div>`;
+        })}</div>`}
+        <div class="row" style="gap:8px">
+          <button class="ghost" style="flex:1" onClick=${() => fileRef.current?.click()}>+ Add another photo</button>
+          <button class="btn" style="flex:1" onClick=${onClose}>Done</button>
+        </div>`}
+    </div>
   </div></${Portal}>`;
 }
 
