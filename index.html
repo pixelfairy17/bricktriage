@@ -26,6 +26,10 @@
   .mono { font-family:ui-monospace,Menlo,monospace; }
   .dim { color:var(--dim); }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
+  /* Sticky category headers in the (long) set parts list. Each header sticks within its OWN group
+     box, so scrolling into the next group slides the previous header out and pins the next one —
+     you always see which category you're in, and the header stays one tap from collapsing. */
+  .grouphdr { position:sticky; top:0; z-index:5; }
   .label { font-family:ui-monospace,Menlo,monospace; font-size:11px; letter-spacing:1.5px;
     color:var(--dim); text-transform:uppercase; margin-bottom:7px; }
   input, select, textarea { width:100%; background:var(--panel2); border:1px solid var(--line);
@@ -89,8 +93,11 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.56.0";
+const APP_VERSION = "0.57.0";
 const CHANGELOG = [
+  ["0.57.0", "2026-06-30", [
+    "Set parts list — category headers are now STICKY while you scroll a long list. The colour / part-type group header (and Instructions & Box) pins to the top so you always see which category you're in and can collapse it without scrolling back up. With several groups open, scrolling into the next one slides the previous header out and pins the next — iOS contacts-list style.",
+  ]],
   ["0.56.0", "2026-06-30", [
     "Set parts list, Group: Type — parts inside each bucket now order by HEIGHT first (then width, length). Previously the bucket sorted by part name as plain text, so a tall \"Brick 1 x 1 x 3\" sorted to the top (before \"1 x 2\") and a \"1 x 2 x 2\" landed between \"1 x 1\" and \"1 x 2\". Now every standard 1-high brick sits together, then the 1 1/3-, 2-, 3-high bands in turn. Fractional heights (e.g. 2/3) are parsed too.",
   ]],
@@ -4147,7 +4154,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       const f = counted.reduce((a, p) => a + Math.min(p.qtyFound, p.qtyNeeded), 0);
       const t = counted.reduce((a, p) => a + p.qtyNeeded, 0);
       return html`<div style="margin-bottom:8px">
-        <button class="row" onClick=${() => toggleColor(color)}
+        <button class="row grouphdr" onClick=${() => toggleColor(color)}
           style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
           <span class="label" style="margin:0">${color} · ${list.length}</span>
           <span class="row" style="gap:10px">
@@ -4176,7 +4183,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       const accOpen = q.trim().length > 0 || openColors.has("__acc");
       const accHave = (rec.instructions !== "none" ? 1 : 0) + (rec.box?.has ? 1 : 0);
       return html`<div style="margin-bottom:8px">
-        <button class="row" onClick=${() => toggleColor("__acc")}
+        <button class="row grouphdr" onClick=${() => toggleColor("__acc")}
           style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
           <span class="label" style="margin:0">📖 Instructions & Box · 2</span>
           <span class="row" style="gap:10px">

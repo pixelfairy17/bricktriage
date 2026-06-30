@@ -9,6 +9,16 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.57.0 — 2026-06-30
+
+Set parts list — **sticky category headers**.
+
+- When a parts list is long and you scroll inside it, the **colour / part-type group header** now **pins to the top** of the view, so you always see which category you're in — and it stays one tap from collapsing.
+- With more than one group open, scrolling into the next group **slides the previous header out and pins the next one** (iOS contacts-list behaviour). Each header sticks within its own group, so the hand-off happens exactly where the next group begins.
+- Also applies to the **Instructions & Box** group at the foot of the list.
+
+-----
+
 ## v0.56.0 — 2026-06-30
 
 Set parts list, **Group: Type** — order each bucket by **height** first.
