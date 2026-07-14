@@ -9,6 +9,18 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.59.0 — 2026-07-14
+
+**Same set, more than once** — a set can now be in several buys, and more than once in the same buy — plus **per-copy storage / built location / photos**.
+
+- **Add set** on an already-tracked number no longer dead-ends: alongside Open set / Dismiss there's now **＋ Add another copy** — it logs +1 of the set against the buy(s) selected above, no re-fetch. Same buy again bumps the qty; a different buy records a new copy entry. Parts tracking stays **one shared checklist per set number** (cross-buy completion unchanged).
+- **Set detail → Buys & notes**: each linked buy gets its own **copy card** — **×qty stepper**, **📦 Stored at**, **🏠 If built — where**, and **photos** (camera/library, downscaled ≤1024px, stored on-device like buy photos). The accordion summary lists every buy with its qty, so which-buys-and-how-many is visible at a glance. A set with no buy can still hold qty/storage via **＋ Add qty / storage**.
+- **Set cards** show ×qty beside each buy label plus a **📍 location line**; **buy detail** set rows show ×qty and 📍 too, and the list header counts copies when they exceed sets (e.g. `Sets from this buy · 2 (5 copies)`).
+- **Buy detail → + Link existing set** now lists **every** tracked set not yet in that buy (was: only never-linked sets), with a filter box — linking a set already owned elsewhere records another copy in this buy.
+- **Data model**: copies live on the set record (`copies: [{buyId, qty, storage, builtLoc, photoIds}]`); `buyIds` is now **derived** from them, so every existing view/filter/spend calc keeps working. Old records migrate lazily on load (index bumped to v6). Copy photos ride along in **backup format v9** and are cleaned up on set delete. Deleting a buy keeps a copy's qty/storage/photos (entry moves to "no buy") instead of dropping them.
+
+-----
+
 ## v0.58.0 — 2026-06-30
 
 **📸 Visual match (beta)** — photo-tag parts into a set instead of scrolling the checklist.
