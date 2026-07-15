@@ -93,8 +93,15 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.58.0";
+const APP_VERSION = "0.59.0";
 const CHANGELOG = [
+  ["0.59.0", "2026-07-14", [
+    "Same set, more than once: a set can now sit in several buys — and more than once in the SAME buy. The old “already tracked” dead-end in Add set now offers ＋ Add another copy: it logs +1 of the set against the buy(s) selected above, no re-fetch. Parts tracking stays ONE shared checklist per set number (cross-buy completion unchanged).",
+    "Set detail → Buys & notes: every linked buy gets its own copy card — ×qty stepper, 📦 Stored at, 🏠 If built — where, and photos (camera/library, downscaled, on-device, same as buy photos). The accordion summary lists each buy with its qty, so which-buys-and-how-many is visible at a glance.",
+    "Set cards show ×qty beside each buy label plus a 📍 line with the copy locations; buy detail set rows show ×qty and 📍 too, and the list header counts copies when they exceed sets.",
+    "Buy detail → + Link existing set now lists EVERY tracked set not yet in that buy (was: only never-linked sets), with a filter box — linking a set you already own elsewhere records another copy in this buy. A set with no buy can still hold qty/storage via ＋ Add qty / storage.",
+    "Data: copies live on the set record ({buy, qty, storage, built-location, photos}); buyIds is now derived from them, so every existing view and backup keeps working. Copy photos ride along in backup (format v9) and are cleaned up on set delete. Deleting a buy keeps a copy's storage/photos (entry moves to “no buy”) instead of dropping them.",
+  ]],
   ["0.58.0", "2026-06-30", [
     "📸 Visual match (beta) — a new button on a set's parts list lets you photo-tag parts instead of scrolling the checklist. Take a photo of your loose parts, drag a box around each one, and the crop is matched against THIS set's inventory (printed/sticker variants still match the plain mould) — a hit logs +1 on the row and marks it 📸. Several tags per photo; a part that's in the set in more than one still-needed colour asks which. ‘+ Add another photo’ keeps the same set and accumulates, so you photograph the surface, then take more shots as you pull the build apart (interior parts a single photo can't see). Tags are per-session — only the +1s persist. A miss can be picked from the set by hand.",
   ]],
@@ -749,11 +756,39 @@ const partsVal = parts => {
   }
   return { foundQty, foundVal, fullQty, fullVal };
 };
+// ---------- set copies (v0.59) ----------
+// A set's per-buy entries live in rec.copies: [{id, buyId|null, qty, storage, builtLoc, photoIds[]}].
+// qty = how many of this set came from that buy (same set twice in one buy = qty 2; a copy from
+// another buy = another entry). storage / builtLoc / photos say where each copy physically is.
+// rec.buyIds is DERIVED from copies (unique, non-null), so every existing buyIds reader still works.
+// Parts stay ONE shared checklist per set number — cross-buy completion is unchanged.
+const newCopy = (buyId = null) => ({ id: `${Date.now()}${Math.random().toString(36).slice(2, 6)}`, buyId: buyId || null, qty: 1, storage: "", builtLoc: "", photoIds: [] });
+const copiesOf = rec => Array.isArray(rec.copies) ? rec.copies : (rec.buyIds || []).map(id => newCopy(id));
+// one entry per buy (null = no buy): merges duplicates (qty summed, photos/locations joined), floors
+// qty at 1, then re-derives buyIds. Runs on every persist + on set open, so old records migrate lazily.
+const normalizeCopies = rec => {
+  const seen = new Map(), list = [];
+  for (const raw of copiesOf(rec)) {
+    const c = { ...newCopy(raw.buyId), ...raw, buyId: raw.buyId || null, qty: Math.max(1, raw.qty || 1) };
+    const prev = seen.get(c.buyId || "");
+    if (prev) {
+      prev.qty += c.qty;
+      prev.photoIds = [...(prev.photoIds || []), ...(c.photoIds || [])];
+      for (const f of ["storage", "builtLoc"]) if (c[f]) prev[f] = prev[f] ? `${prev[f]} · ${c[f]}` : c[f];
+    } else { seen.set(c.buyId || "", c); list.push(c); }
+  }
+  rec.copies = list;
+  rec.buyIds = list.map(c => c.buyId).filter(Boolean);
+  return rec;
+};
+// a copy entry worth keeping when its buy link goes away (qty above 1, a location, or photos)
+const copyHasData = c => c.qty > 1 || !!c.storage || !!c.builtLoc || (c.photoIds || []).length > 0;
 const indexEntry = rec => {
   const { found, total, pct } = completion(rec.parts);
-  return { setNum: rec.setNum, name: rec.name, year: rec.year, idxVer: 5, tags: rec.tags || [],
+  return { setNum: rec.setNum, name: rec.name, year: rec.year, idxVer: 6, tags: rec.tags || [],
     img: rec.imgDefault === "box" ? blBoxImg(rec.setNum) : rec.img, triage: rec.triage,
     instructions: rec.instructions, found, total, pct, dateAdded: rec.dateAdded, lastPartAt: rec.lastPartAt || null, buyIds: rec.buyIds || [],
+    copies: copiesOf(rec).map(c => ({ buyId: c.buyId || null, qty: Math.max(1, c.qty || 1), storage: c.storage || "", builtLoc: c.builtLoc || "" })),
     theme: rec.theme || null, bookletQty: (rec.booklets || []).length, donor: !!rec.donor,
     condition: condOfSet(rec), built: !!rec.built, building: !!rec.building,
     pricePaid: rec.pricePaid || 0, rrp: rec.rrp || 0, boxHas: !!rec.box?.has,
@@ -1444,7 +1479,7 @@ function App() {
   const [tab, setTab] = useState("sets");
   const [index, setIndex] = useState(() => {
     let idx = load("bt:index", []);
-    if (idx.some(e => e.fullVal === undefined || e.bookletQty === undefined || e.condition === undefined || e.idxVer !== 5)) {
+    if (idx.some(e => e.fullVal === undefined || e.bookletQty === undefined || e.condition === undefined || e.idxVer !== 6)) {
       idx = idx.map(e => { const rec = load(`bt:set:${e.setNum}`, null); return rec ? indexEntry(rec) : e; });
       save("bt:index", idx);
     }
@@ -1532,6 +1567,7 @@ function App() {
 
   const persistIndex = next => { setIndex(next); save("bt:index", next); };
   const persistSet = useCallback(rec => {
+    normalizeCopies(rec); // v0.59: copies are the source of truth, buyIds derived from them
     // stamp lastPartAt whenever the found-qty rises (a part was just added) — drives the
     // "Recently added part" sort. Non-part edits (triage/notes) leave the stamp untouched.
     const prevRec = load(`bt:set:${rec.setNum}`, null);
@@ -1577,6 +1613,8 @@ function App() {
     setSetOrigin(null);
   };
   const deleteSet = setNum => {
+    const victim = load(`bt:set:${setNum}`, null);
+    for (const c of (victim?.copies || [])) for (const pid of (c.photoIds || [])) del(photoKey(pid));
     del(`bt:set:${setNum}`);
     persistIndex(index.filter(e => e.setNum !== setNum));
     backFromSet();
@@ -1595,7 +1633,12 @@ function App() {
     for (const e of index) {
       if (!(e.buyIds || []).includes(id)) continue;
       const rec = load(`bt:set:${e.setNum}`, null);
-      if (rec) { rec.buyIds = (rec.buyIds || []).filter(x => x !== id); persistSet(rec); }
+      if (rec) {
+        normalizeCopies(rec);
+        // a copy with data (qty/storage/photos) survives as "no buy"; a bare link is dropped
+        rec.copies = rec.copies.map(c => c.buyId !== id ? c : copyHasData(c) ? { ...c, buyId: null } : null).filter(Boolean);
+        persistSet(rec);
+      }
     }
     setBuys(prev => { const next = prev.filter(b => b.id !== id); save("bt:buys", next); return next; });
     if (openBuyId === id) setOpenBuyId(null);
@@ -1627,7 +1670,7 @@ function App() {
             tags=${tags} createTag=${createTag}
             onBack=${() => setOpenMocId(null)} />`}
         ${tab === "sets" && adding && html`
-          <${AddSet} key="v-addset" buys=${buys} cats=${cats} addBuy=${addBuy} existing=${index.map(e => e.setNum)}
+          <${AddSet} key="v-addset" buys=${buys} cats=${cats} addBuy=${addBuy} persistSet=${persistSet} existing=${index.map(e => e.setNum)}
             lastBuy=${lastBulkBuyOf(buys, index)}
             prefBuy=${addFromBuyId ? buys.find(b => b.id === addFromBuyId) : null}
             onCancel=${() => { if (addFromBuyId) backToOriginBuy(); else setAdding(false); }}
@@ -1663,8 +1706,11 @@ function App() {
 // ---------- Sets list ----------
 function SetCard({ e, buys, onOpen, showBuys = true, mocPcs = 0, compact = false, expanded = false, onToggleExpand, tags = [] }) {
   const myTags = resolveTags(tags, e.tags);
-  const linked = showBuys ? (e.buyIds || []).map(id => buys.find(b => b.id === id)).filter(Boolean) : [];
-  const channels = [...new Set(linked.map(b => b.category).filter(Boolean))];
+  // v0.59: per-buy copy entries carry qty; stale index entries fall back to plain buyIds
+  const linked = showBuys ? (e.copies?.length ? e.copies.filter(c => c.buyId) : (e.buyIds || []).map(id => ({ buyId: id, qty: 1 })))
+    .map(c => ({ ...c, buy: buys.find(b => b.id === c.buyId) })).filter(c => c.buy) : [];
+  const channels = [...new Set(linked.map(c => c.buy.category).filter(Boolean))];
+  const locs = showBuys ? [...new Set((e.copies || []).flatMap(c => [c.storage, c.builtLoc].filter(Boolean)))] : [];
   const isNew = e.condition === "new";
   // #9: condition shown as a corner emoji on the image — part-out overrides, then new vs used
   const condEmoji = e.triage === "partOut" ? "📤" : isNew ? "✨" : "♻️";
@@ -1700,11 +1746,12 @@ function SetCard({ e, buys, onOpen, showBuys = true, mocPcs = 0, compact = false
       </div>` : ""}
     </div>` : ""}
     ${(linked.length > 0 || channels.length > 0) && html`<div class="row" style="gap:6px;margin-top:3px;justify-content:space-between">
-      <span class="dim ellip" style="font-size:11px;min-width:0;flex:1">${linked.map(b => b.label).join("  +  ")}</span>
+      <span class="dim ellip" style="font-size:11px;min-width:0;flex:1">${linked.map(c => c.buy.label + (c.qty > 1 ? ` ×${c.qty}` : "")).join("  +  ")}</span>
       <span class="row" style="gap:4px;flex-shrink:0">
         ${channels.map(c => html`<span key=${c} class="badge" style="color:var(--yellow);border:1px solid var(--yellow);font-size:10px;padding:0 5px">${c}</span>`)}
       </span>
-    </div>`}`;
+    </div>`}
+    ${locs.length > 0 && html`<div class="dim ellip" style="font-size:11px;margin-top:3px">📍 ${locs.join(" · ")}</div>`}`;
 
   if (compact) return html`<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px">
     <div class="row" style="align-items:stretch;gap:0">
@@ -3449,7 +3496,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
 }
 
 // ---------- Add set (direct fetch + scan) ----------
-function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOpenExisting, onSave, onQuickSave }) {
+function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, onCancel, onOpenExisting, onSave, onQuickSave }) {
   const [numRaw, setNumRaw] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
@@ -3535,6 +3582,22 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
     } catch (e) { setErr(e.message || String(e)); }
     setBusy(false); setProgress("");
   }
+
+  // v0.59: the set is already tracked and e has ANOTHER physical copy — log +1 of it against the
+  // selected buy(s) without re-fetching. Same buy again = qty up; new buy = new copy entry.
+  const addCopy = setNum => {
+    const rec = structuredClone(load(`bt:set:${setNum}`, null));
+    if (!rec) { setErr("Set record missing from storage."); setDup(null); return; }
+    normalizeCopies(rec);
+    const chosen = buys.filter(b => buyIds.includes(b.id));
+    for (const b of chosen) {
+      const c = rec.copies.find(x => x.buyId === b.id);
+      if (c) c.qty += 1; else rec.copies.push(newCopy(b.id));
+    }
+    persistSet(rec);
+    setDup(null); setNumRaw("");
+    setSavedMsg(`Added another ${rec.name} (${setNum}) → ${chosen.map(b => `${b.label} ×${rec.copies.find(x => x.buyId === b.id)?.qty || 1}`).join(" + ")}`);
+  };
 
   const MODE_HINT = {
     normal: "Fetch, review, then save manually.",
@@ -3624,14 +3687,22 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
         <button class="ghost" onClick=${() => setFetched(null)}>Back</button>
       </div>`}
 
-    ${dup && html`<div class="card">
-      <div style="font-weight:700;margin-bottom:4px">${dup} is already tracked</div>
-      <div class="dim" style="font-size:13px;margin-bottom:10px">Open it to log more parts, or dismiss and keep adding.</div>
-      <div class="row" style="gap:8px">
-        <button class="btn" style="flex:1" onClick=${() => onOpenExisting(dup)}>Open set</button>
-        <button class="ghost" style="flex:1" onClick=${() => { setDup(null); setNumRaw(""); }}>Dismiss</button>
-      </div>
-    </div>`}
+    ${dup && (() => {
+      const chosen = buys.filter(b => buyIds.includes(b.id));
+      const drec = load(`bt:set:${dup}`, null);
+      const have = b => { const c = drec && copiesOf(drec).find(x => x.buyId === b.id); return c ? ` (have ×${c.qty})` : ""; };
+      return html`<div class="card">
+        <div style="font-weight:700;margin-bottom:4px">${dup} is already tracked</div>
+        <div class="dim" style="font-size:13px;margin-bottom:10px">${chosen.length
+          ? `Got another copy? Add it to ${chosen.map(b => b.label + have(b)).join(" + ")} — or open the set to log parts.`
+          : "Got another copy? Link a buy above to add it into that buy — or open the set to log parts."}</div>
+        ${chosen.length > 0 && html`<button class="btn green" style="margin-bottom:8px" onClick=${() => addCopy(dup)}>＋ Add another copy → ${chosen.map(b => b.label).join(" + ")}</button>`}
+        <div class="row" style="gap:8px">
+          <button class="btn" style="flex:1" onClick=${() => onOpenExisting(dup)}>Open set</button>
+          <button class="ghost" style="flex:1" onClick=${() => { setDup(null); setNumRaw(""); }}>Dismiss</button>
+        </div>
+      </div>`;
+    })()}
     ${err && html`<div class="card" style="color:var(--red);font-size:13px">${err}</div>`}
     ${scanPart && html`<div class="card">
       <div class="row" style="gap:10px;margin-bottom:8px">
@@ -3680,7 +3751,7 @@ function AddSet({ buys, cats, addBuy, existing, lastBuy, prefBuy, onCancel, onOp
 
 // ---------- Set detail ----------
 function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack, onDelete }) {
-  const [rec, setRec] = useState(() => load(`bt:set:${setNum}`, null));
+  const [rec, setRec] = useState(() => { const r = load(`bt:set:${setNum}`, null); return r ? normalizeCopies(r) : null; });
   // top up the local part catalog from this set's parts whenever it's opened (covers sets fetched
   // before the catalog existed, and restored backups) — idempotent, only fills blanks
   useEffect(() => {
@@ -3694,6 +3765,10 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const [hideFound, setHideFound] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  // v0.59 copy cards: shared hidden file input (copyPhotoFor targets the copy) + full-screen viewer
+  const copyPhotoInput = useRef(null);
+  const copyPhotoFor = useRef(null);
+  const [viewCopyPhoto, setViewCopyPhoto] = useState(null); // {copyId, photoId}
   const [lastAct, setLastAct] = useState(null); // {id, applied, qty, ts} — tiny "just changed" hint under a row
   // #3: opening a set always starts at the top (the shared .content kept the list's scroll position)
   useEffect(() => { document.querySelector(".content")?.scrollTo({ top: 0 }); }, []);
@@ -3787,6 +3862,38 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
   const rstats = remainingStats(rec);
 
   const change = mut => setRec(prev => { const next = mut(structuredClone(prev)); persistSet(next); return next; });
+  // v0.59: mutate one copy entry in place (qty / storage / builtLoc / photos)
+  const editCopy = (id, mut) => change(r => { const c = (r.copies || []).find(x => x.id === id); if (c) mut(c); return r; });
+  async function addCopyPhotos(copyId, files) {
+    const ids = [];
+    for (const file of files) {
+      try {
+        const small = await downscale(file, 1024);
+        const dataURL = await blobToDataURL(small);
+        const id = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+        save(photoKey(id), dataURL);
+        ids.push(id);
+      } catch (e) { alert("Couldn’t read a photo: " + (e.message || e)); }
+    }
+    if (ids.length) editCopy(copyId, c => { c.photoIds = [...(c.photoIds || []), ...ids]; });
+  }
+  // BuySelect add/remove keeps driving the buy links; removal warns when the copy carries data
+  const onBuysChange = ids => {
+    const removed = (rec.buyIds || []).filter(id => !ids.includes(id));
+    for (const id of removed) {
+      const c = (rec.copies || []).find(x => x.buyId === id);
+      if (c && copyHasData(c) && !confirm(`Unlink ${buys.find(x => x.id === id)?.label || "this buy"}? This set's qty / storage / photos for that buy are removed too.`)) return;
+    }
+    change(r => {
+      for (const id of ids) if (!(r.copies || []).some(c => c.buyId === id)) r.copies.push(newCopy(id));
+      r.copies = r.copies.filter(c => {
+        if (!c.buyId || ids.includes(c.buyId)) return true;
+        for (const pid of (c.photoIds || [])) del(photoKey(pid));
+        return false;
+      });
+      return r;
+    });
+  };
   // #1: record the applied delta so the row can show a tiny "just changed → x/y" hint (e kept
   // re-counting because she couldn't tell whether a tap had registered).
   const bump = (id, d) => {
@@ -4100,17 +4207,69 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
       </div>`}
     </${Acc}>
 
-    <${Acc} title="Buys & notes" summary=${(rec.buyIds || []).length ? `${(rec.buyIds || []).length} buy${(rec.buyIds || []).length > 1 ? "s" : ""}` : ""}
+    <${Acc} title="Buys & notes" summary=${(rec.copies || []).length
+        ? rec.copies.map(c => `${c.buyId ? (buys.find(x => x.id === c.buyId)?.label || "?") : "no buy"}${c.qty > 1 ? ` ×${c.qty}` : ""}`).join(" · ")
+        : ""}
       open=${openAcc.has("meta")} onToggle=${() => toggleAcc("meta")}>
       <${Label}>Source buys</${Label}>
       <${BuySelect} buys=${buys} cats=${cats} selected=${rec.buyIds || []}
-        onChange=${ids => change(r => { r.buyIds = ids; return r; })}
+        onChange=${onBuysChange}
         onCreateBuy=${addBuy} />
+      ${(rec.copies || []).map(c => {
+        const b = c.buyId ? buys.find(x => x.id === c.buyId) : null;
+        return html`<div key=${c.id} style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px">
+          <div class="row" style="justify-content:space-between;gap:8px">
+            <span class="ellip" style="font-weight:700;font-size:13px;min-width:0;flex:1">${b ? b.label : "No buy"}</span>
+            <div class="row" style="gap:6px;flex-shrink:0">
+              <button class="step" style="width:34px;height:34px" disabled=${c.qty <= 1}
+                onClick=${() => editCopy(c.id, x => { x.qty = Math.max(1, x.qty - 1); })}>−</button>
+              <span class="mono" style="font-weight:800;min-width:30px;text-align:center">×${c.qty}</span>
+              <button class="step plus" style="width:34px;height:34px"
+                onClick=${() => editCopy(c.id, x => { x.qty += 1; })}>+</button>
+              ${!c.buyId && html`<button class="step" style="width:34px;height:34px"
+                onClick=${() => {
+                  if ((c.photoIds || []).length && !confirm("Remove this entry? Its photos are deleted.")) return;
+                  change(r => { const v = (r.copies || []).find(x => x.id === c.id); for (const pid of (v?.photoIds || [])) del(photoKey(pid)); r.copies = r.copies.filter(x => x.id !== c.id); return r; });
+                }}>✕</button>`}
+            </div>
+          </div>
+          <div class="row" style="gap:8px;margin-top:8px">
+            <div style="flex:1">
+              <div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">📦 Stored at</div>
+              <input placeholder="e.g. tub 3 / shelf A" value=${c.storage || ""}
+                onChange=${e => editCopy(c.id, x => { x.storage = e.target.value; })} />
+            </div>
+            <div style="flex:1">
+              <div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:4px">🏠 If built — where</div>
+              <input placeholder="e.g. display shelf" value=${c.builtLoc || ""}
+                onChange=${e => editCopy(c.id, x => { x.builtLoc = e.target.value; })} />
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;overflow-x:auto;margin-top:8px">
+            ${(c.photoIds || []).map(pid => {
+              const src = photoSrc(pid);
+              return src && html`<img key=${pid} src=${src}
+                style="width:56px;height:56px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid var(--line)"
+                onClick=${() => setViewCopyPhoto({ copyId: c.id, photoId: pid })}/>`;
+            })}
+            <button class="step" style="width:56px;height:56px;font-size:22px;flex-shrink:0"
+              onClick=${() => { copyPhotoFor.current = c.id; copyPhotoInput.current?.click(); }}>📷</button>
+          </div>
+        </div>`;
+      })}
+      ${(rec.copies || []).length === 0 && html`<button class="ghost" style="margin-top:8px"
+        onClick=${() => change(r => { r.copies.push(newCopy(null)); return r; })}>＋ Add qty / storage (no buy)</button>`}
+      <div class="dim" style="font-size:12px;margin-top:8px">×qty = copies of this set from that buy (same buy twice = bump the qty). Storage / built-location / photos say where each copy lives. Parts stay one shared checklist for the set.</div>
+      <input ref=${copyPhotoInput} type="file" accept="image/*" multiple style="display:none"
+        onChange=${e => { const fs = [...(e.target.files || [])]; const id = copyPhotoFor.current; if (fs.length && id) addCopyPhotos(id, fs); e.target.value = ""; }} />
       <div style="height:12px"></div>
       <${Label}>Notes</${Label}>
       <textarea style="height:60px" value=${rec.notes || ""} placeholder="e.g. box in container 3, missing minifig"
         onInput=${e => change(r => { r.notes = e.target.value; return r; })}></textarea>
     </${Acc}>
+    ${viewCopyPhoto && html`<${PhotoViewer} photoId=${viewCopyPhoto.photoId} isDisplay=${true}
+      onDelete=${pid => { del(photoKey(pid)); editCopy(viewCopyPhoto.copyId, c => { c.photoIds = (c.photoIds || []).filter(x => x !== pid); }); setViewCopyPhoto(null); }}
+      onClose=${() => setViewCopyPhoto(null)} />`}
 
     <div class="card" style="padding:12px">
       <input placeholder="Filter parts (name / number / colour)" value=${q} onInput=${e => setQ(e.target.value)} />
@@ -5011,7 +5170,8 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
   const [showForm, setShowForm] = useState(false);
   const [editBuy, setEditBuy] = useState(null);
   const [addMerchFor, setAddMerchFor] = useState(null); // buyId for new pre-linked merch (#14)
-  const [linkPicker, setLinkPicker] = useState(null); // null | "set" | "merch" — link an existing unlinked item
+  const [linkPicker, setLinkPicker] = useState(null); // null | "set" | "merch" — link an existing item
+  const [linkQ, setLinkQ] = useState(""); // filter for the link-set picker (any tracked set can be linked)
   const [detailSort, setDetailSort] = useState("date");
   const [swipeId, setSwipeId] = useState(null);
   const [openNav, setOpenNav] = useState(null); // null | "kind" | "cat" 
@@ -5058,11 +5218,14 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
   const bulk = stats("bulk"), reg = stats("regular"), loose = stats("loose");
   const noBuySets = useMemo(() => index.filter(e => !(e.buyIds || []).length), [index]);
   const unlinkedMerch = useMemo(() => merch.filter(m => !(m.buyIds || []).length), [merch]);
-  // link an existing set / merch (one currently tied to no buy) into the open buy
+  // v0.59: link ANY tracked set into the open buy — a set already in another buy gains another
+  // copy entry here (was: only never-linked sets). Same buy again would bump qty (defensive).
   const linkSetToBuy = (setNum, buyId) => {
     const rec = structuredClone(load(`bt:set:${setNum}`, null));
     if (!rec) return;
-    rec.buyIds = [...(rec.buyIds || []), buyId];
+    normalizeCopies(rec);
+    const c = rec.copies.find(x => x.buyId === buyId);
+    if (c) c.qty += 1; else rec.copies.push(newCopy(buyId));
     persistSet?.(rec);
   };
   const linkMerchToBuy = (merchId, buyId) => {
@@ -5190,6 +5353,11 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
   if (openBuy) {
     const sets = [...setsOf(openBuy.id)].sort((a, b) =>
       detailSort === "pct" ? b.pct - a.pct : b.dateAdded - a.dateAdded);
+    // v0.59: qty of a set within THIS buy (from the index's copy summaries)
+    const qtyHere = e => ((e.copies || []).find(c => c.buyId === openBuy.id)?.qty) || 1;
+    const copyTotal = sets.reduce((a, e) => a + qtyHere(e), 0);
+    // any tracked set not yet in this buy can be linked in (adds another copy entry)
+    const linkableSets = index.filter(e => !(e.buyIds || []).includes(openBuy.id));
     const isReg = buyKind(openBuy) === "regular";
     const isLoose = buyKind(openBuy) === "loose";
     const kindName = isReg ? "Regular" : isLoose ? "Loose / PAB" : "Bulk";
@@ -5315,27 +5483,34 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
         <button class="btn" style="flex:1" onClick=${() => onAddSet?.(openBuy.id)}>+ Add set</button>
         <button class="btn" style="flex:1;background:var(--panel);border:1px solid var(--line);color:var(--text)" onClick=${() => setAddMerchFor(openBuy.id)}>+ Add merch</button>
       </div>
-      ${(noBuySets.length > 0 || unlinkedMerch.length > 0) && html`<div class="row" style="gap:8px;margin:-6px 0 12px">
-        ${noBuySets.length > 0 && html`<button class="ghost" style="flex:1;padding:10px" onClick=${() => setLinkPicker("set")}>+ Link existing set · ${noBuySets.length}</button>`}
+      ${(linkableSets.length > 0 || unlinkedMerch.length > 0) && html`<div class="row" style="gap:8px;margin:-6px 0 12px">
+        ${linkableSets.length > 0 && html`<button class="ghost" style="flex:1;padding:10px" onClick=${() => { setLinkQ(""); setLinkPicker("set"); }}>+ Link existing set · ${linkableSets.length}</button>`}
         ${unlinkedMerch.length > 0 && html`<button class="ghost" style="flex:1;padding:10px" onClick=${() => setLinkPicker("merch")}>+ Link existing merch · ${unlinkedMerch.length}</button>`}
       </div>`}
       <div class="row" style="justify-content:space-between;margin:4px 2px 8px">
-        <div class="label" style="margin:0">Sets from this buy · ${sets.length}</div>
+        <div class="label" style="margin:0">Sets from this buy · ${sets.length}${copyTotal > sets.length ? ` (${copyTotal} copies)` : ""}</div>
         <${Chip} label=${detailSort === "pct" ? "↓ Completion" : "↓ Newest"} color="var(--blue)" active
           onClick=${() => setDetailSort(v => v === "pct" ? "date" : "pct")} />
       </div>
       ${sets.length === 0 && html`<div class="card dim" style="text-align:center;padding:24px">
         No sets linked yet. Link from a set's detail screen or when adding a set.</div>`}
-      ${sets.map(e => html`
+      ${sets.map(e => {
+        const cp = (e.copies || []).find(c => c.buyId === openBuy.id);
+        const loc = cp ? [cp.storage, cp.builtLoc].filter(Boolean).join(" · ") : "";
+        return html`
         <div class="card row" style="cursor:pointer" onClick=${() => onOpenSet(e.setNum)}>
           ${e.img ? html`<img class="setimg" src=${e.img} loading="lazy"/>` : html`<div class="setimg" style="background:var(--panel2)"></div>`}
           <div style="flex:1;min-width:0">
-            <div class="ellip" style="font-weight:700">${e.name}</div>
+            <div class="row" style="gap:6px;min-width:0">
+              <span class="ellip" style="font-weight:700;min-width:0">${e.name}</span>
+              ${qtyHere(e) > 1 && html`<span class="badge" style="color:var(--purple);border:1px solid var(--purple);flex-shrink:0">×${qtyHere(e)}</span>`}
+            </div>
             <div class="dim mono" style="font-size:12px">${e.setNum} · ${e.year}</div>
+            ${loc && html`<div class="dim ellip" style="font-size:11px">📍 ${loc}</div>`}
             <span style=${`font-size:11px;font-weight:700;color:${triageOf(e.triage).color}`}>${triageOf(e.triage).label}</span>
           </div>
           <${Ring} pct=${e.pct} />
-        </div>`)}
+        </div>`; })}
       ${(() => {
         const merchHere = merch.filter(m => (m.buyIds || []).includes(openBuy.id));
         return merchHere.length > 0 && html`<div>
@@ -5360,17 +5535,30 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
       ${linkPicker && html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setLinkPicker(null); }}>
         <div class="sheet">
           <${Header} title=${linkPicker === "set" ? "Link existing set" : "Link existing merch"} onBack=${() => setLinkPicker(null)} />
-          <div class="dim" style="font-size:12px;margin-bottom:10px">Only items not yet linked to any buy are shown. Tap to link to “${openBuy.label}”.</div>
-          ${linkPicker === "set" && (noBuySets.length === 0
-            ? html`<div class="card dim" style="text-align:center;padding:20px">No unlinked sets left.</div>`
-            : noBuySets.map(e => html`<div key=${e.setNum} class="card row" style="cursor:pointer" onClick=${() => linkSetToBuy(e.setNum, openBuy.id)}>
-                ${e.img ? html`<img class="setimg" src=${e.img} loading="lazy"/>` : html`<div class="setimg" style="background:var(--panel2)"></div>`}
-                <div style="flex:1;min-width:0">
-                  <div class="ellip" style="font-weight:700">${e.name}</div>
-                  <div class="dim mono" style="font-size:12px">${e.setNum} · ${e.year}</div>
-                </div>
-                <span class="step plus" style="width:42px;height:42px;display:flex;align-items:center;justify-content:center">+</span>
-              </div>`))}
+          <div class="dim" style="font-size:12px;margin-bottom:10px">${linkPicker === "set"
+            ? `Tap to link to “${openBuy.label}”. A set already in another buy gets ANOTHER copy recorded here — its parts checklist stays shared.`
+            : `Only merch not yet linked to any buy is shown. Tap to link to “${openBuy.label}”.`}</div>
+          ${linkPicker === "set" && html`<input placeholder="Filter sets (name / number)" value=${linkQ}
+            onInput=${e => setLinkQ(e.target.value)} style="margin-bottom:10px" />`}
+          ${linkPicker === "set" && (() => {
+            const ql = linkQ.trim().toLowerCase();
+            const list = linkableSets.filter(e => !ql || (e.name || "").toLowerCase().includes(ql) || (e.setNum || "").toLowerCase().includes(ql));
+            // never-linked sets first (the common “just catalogued” case), then everything else
+            list.sort((a, b) => ((a.buyIds || []).length ? 1 : 0) - ((b.buyIds || []).length ? 1 : 0));
+            return list.length === 0
+              ? html`<div class="card dim" style="text-align:center;padding:20px">${linkableSets.length === 0 ? "Every tracked set is already in this buy." : "No sets match the filter."}</div>`
+              : list.map(e => {
+                const elsewhere = (e.buyIds || []).map(id => buys.find(b => b.id === id)?.label).filter(Boolean).join(" + ");
+                return html`<div key=${e.setNum} class="card row" style="cursor:pointer" onClick=${() => linkSetToBuy(e.setNum, openBuy.id)}>
+                  ${e.img ? html`<img class="setimg" src=${e.img} loading="lazy"/>` : html`<div class="setimg" style="background:var(--panel2)"></div>`}
+                  <div style="flex:1;min-width:0">
+                    <div class="ellip" style="font-weight:700">${e.name}</div>
+                    <div class="dim mono" style="font-size:12px">${e.setNum} · ${e.year}</div>
+                    <div class="dim ellip" style="font-size:11px">${elsewhere ? `in ${elsewhere}` : "no buy yet"}</div>
+                  </div>
+                  <span class="step plus" style="width:42px;height:42px;display:flex;align-items:center;justify-content:center">+</span>
+                </div>`; });
+          })()}
           ${linkPicker === "merch" && (unlinkedMerch.length === 0
             ? html`<div class="card dim" style="text-align:center;padding:20px">No unlinked merch left.</div>`
             : unlinkedMerch.map(m => {
@@ -5648,6 +5836,11 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
     const sets = {};
     for (const e of index) sets[e.setNum] = load(`bt:set:${e.setNum}`, null);
     const photos = {};
+    // v0.59: set-copy photos (storage / built-location shots) ride along too
+    for (const rec of Object.values(sets)) for (const c of (rec?.copies || [])) for (const id of (c.photoIds || [])) {
+      const s = load(photoKey(id), null);
+      if (s) photos[id] = s;
+    }
     for (const b of buys) for (const id of (b.photoIds || [])) {
       const s = load(photoKey(id), null);
       if (s) photos[id] = s;
@@ -5660,7 +5853,7 @@ function Settings({ index, buys, merch = [], saveMerchList, mocs = [], saveMocs,
       const s = load(photoKey(id), null);
       if (s) photos[id] = s;
     }
-    const blob = new Blob([JSON.stringify({ v: 8, exported: new Date().toISOString(), apiKey: getKey(), buys, sets, cats, merch, mocs, wtbLists, tags, partTags: loadPartTags(), partTypeOverrides: loadPartTypes(), photos, buyOrder: load("bt:buyorder", []) })], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ v: 9, exported: new Date().toISOString(), apiKey: getKey(), buys, sets, cats, merch, mocs, wtbLists, tags, partTags: loadPartTags(), partTypeOverrides: loadPartTypes(), photos, buyOrder: load("bt:buyorder", []) })], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `bricktriage-backup-${new Date().toISOString().slice(0, 10)}.json`;
