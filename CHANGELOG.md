@@ -9,6 +9,16 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.60.0 — 2026-07-15
+
+**No more "Juniors" theme group** — Juniors sets merge into their real theme.
+
+- "Juniors" (and the old "4 Juniors") is treated as a shelf brand, not a theme: `rootTheme()` now stops one level below a Juniors root and uses the **sub-theme**, resolved against the rest of the Rebrickable theme tree so it lands in the same group mainline sets use (Juniors > Disney Princess → **Disney**, Juniors > City → **City**, Juniors > Ninjago → **Ninjago**). A sub-theme that exists nowhere else keeps its own name.
+- **Already-tracked** Juniors sets remap silently when the Sets view opens — recomputed from the cached theme tree + each set's stored `themeId`, no network. If the theme tree isn't cached yet, they show in the theme-update banner and **Fetch** fixes them; the backfill now reuses a set's stored theme id instead of re-fetching the set from the API.
+- Theme filter dropdown and ⊞ By theme view pick the merge up automatically (they group by the stored name).
+
+-----
+
 ## v0.59.0 — 2026-07-14
 
 **Same set, more than once** — a set can now be in several buys, and more than once in the same buy — plus **per-copy storage / built location / photos**.
