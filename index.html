@@ -93,8 +93,12 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.59.0";
+const APP_VERSION = "0.60.0";
 const CHANGELOG = [
+  ["0.60.0", "2026-07-15", [
+    "Themes: “Juniors” is gone as a group — it's a shelf brand, not a theme. Juniors sets now file under their real theme (Juniors > Disney Princess → Disney, Juniors > City → City, …), resolved against the Rebrickable theme tree so they merge with the mainline groups in the Theme filter and ⊞ By theme view.",
+    "Already-tracked Juniors sets remap themselves silently on opening Sets (from the cached theme tree, no network). If the tree isn't cached yet they appear in the theme-update banner and one tap of Fetch fixes them — the backfill now reuses each set's stored theme id instead of re-fetching the set.",
+  ]],
   ["0.59.0", "2026-07-14", [
     "Same set, more than once: a set can now sit in several buys — and more than once in the SAME buy. The old “already tracked” dead-end in Add set now offers ＋ Add another copy: it logs +1 of the set against the buy(s) selected above, no re-fetch. Parts tracking stays ONE shared checklist per set number (cross-buy completion unchanged).",
     "Set detail → Buys & notes: every linked buy gets its own copy card — ×qty stepper, 📦 Stored at, 🏠 If built — where, and photos (camera/library, downscaled, on-device, same as buy photos). The accordion summary lists each buy with its qty, so which-buys-and-how-many is visible at a glance.",
@@ -932,10 +936,37 @@ async function fetchThemesMap() {
   save("bt:themes", { fetched: Date.now(), map });
   return map;
 }
+// "Juniors" (and the old "4 Juniors") is a shelf brand, not a theme — sets under it group by
+// their sub-theme instead, resolved to the same root the mainline theme uses (Juniors > Disney
+// Princess → Disney, Juniors > City → City), so they merge with the non-Juniors groups.
+const JUNIOR_ROOTS = new Set(["Juniors", "4 Juniors"]);
+function themePath(map, id) { // ancestry chain, root first: [rootId, …, id]
+  const path = []; let cur = id, guard = 0;
+  while (cur != null && map[cur] && guard++ < 20) { path.unshift(cur); cur = map[cur][1]; }
+  return path;
+}
+// root name the same-named NON-Juniors theme resolves to (null if the name only exists under Juniors)
+function mainlineRoot(map, name) {
+  let best = null;
+  for (const tid of Object.keys(map)) {
+    if (map[tid][0] !== name) continue;
+    const p = themePath(map, tid);
+    const root = map[p[0]][0];
+    if (JUNIOR_ROOTS.has(root)) continue;
+    if (p.length === 1) return name; // the name IS a root theme elsewhere (City, Ninjago) — done
+    if (!best || name.startsWith(root)) best = root; // "Disney Princess" → prefer "Disney" over e.g. "Duplo"
+  }
+  return best;
+}
 function rootTheme(map, id) {
-  let cur = id, guard = 0;
-  while (cur != null && map[cur] && map[cur][1] != null && guard++ < 20) cur = map[cur][1];
-  return map[cur] ? map[cur][0] : null;
+  const path = themePath(map, id);
+  if (!path.length) return null;
+  const rootName = map[path[0]][0];
+  if (JUNIOR_ROOTS.has(rootName) && path.length > 1) {
+    const sub = map[path[1]][0];
+    return mainlineRoot(map, sub) || sub;
+  }
+  return rootName;
 }
 
 async function fetchFullSet(setNum, onProgress) {
@@ -3091,9 +3122,24 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
     save("bt:sv:tgroups", [...n]); return n;
   });
 
-  // theme backfill for sets added before v0.16
+  // v0.60: one-time silent remap of sets stored under "Juniors" — recompute from the cached theme
+  // tree + stored themeId (no network). If the tree isn't cached yet, the backfill banner covers it.
+  useEffect(() => {
+    if (!index.some(e => JUNIOR_ROOTS.has(e.theme))) return;
+    const map = load("bt:themes", null)?.map;
+    if (!map) return;
+    for (const e of index) {
+      if (!JUNIOR_ROOTS.has(e.theme)) continue;
+      const rec = structuredClone(load(`bt:set:${e.setNum}`, null));
+      if (!rec?.themeId) continue;
+      const t = rootTheme(map, rec.themeId);
+      if (t && t !== rec.theme) { rec.theme = t; persistSet(rec); }
+    }
+  }, []);
+
+  // theme backfill for sets added before v0.16 (+ Juniors remap when the theme tree isn't cached)
   const [backfill, setBackfill] = useState("");
-  const missingTheme = useMemo(() => index.filter(e => !e.theme), [index]);
+  const missingTheme = useMemo(() => index.filter(e => !e.theme || JUNIOR_ROOTS.has(e.theme)), [index]);
   async function fetchThemes() {
     if (!getKey().trim()) { setBackfill("Add your Rebrickable key in Settings first."); return; }
     try {
@@ -3103,9 +3149,11 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
         setBackfill(`Fetching themes… ${++i}/${missingTheme.length}`);
         const rec = structuredClone(load(`bt:set:${e.setNum}`, null));
         if (!rec) continue;
-        const m = await rbFetch(`https://rebrickable.com/api/v3/lego/sets/${e.setNum}/`);
-        rec.themeId = m.theme_id;
-        rec.theme = rootTheme(map, m.theme_id) || "Other";
+        if (!rec.themeId) { // only hit the API when the set never stored its theme id
+          const m = await rbFetch(`https://rebrickable.com/api/v3/lego/sets/${e.setNum}/`);
+          rec.themeId = m.theme_id;
+        }
+        rec.theme = rootTheme(map, rec.themeId) || "Other";
         persistSet(rec);
       }
       setBackfill("");
@@ -3340,7 +3388,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
     ${segBar}
     <button class="btn" style="margin-bottom:12px" onClick=${onAdd}>+ Add set</button>
     ${missingTheme.length > 0 && html`<div class="card row" style="padding:10px 12px">
-      <span class="dim" style="font-size:12px;flex:1">${backfill || `${missingTheme.length} set${missingTheme.length === 1 ? "" : "s"} missing theme`}</span>
+      <span class="dim" style="font-size:12px;flex:1">${backfill || `${missingTheme.length} set${missingTheme.length === 1 ? "" : "s"} need${missingTheme.length === 1 ? "s" : ""} a theme update`}</span>
       <button class="chip" style="border-color:var(--yellow);color:var(--yellow)" disabled=${backfill.startsWith("Fetching")}
         onClick=${fetchThemes}>Fetch</button>
     </div>`}
