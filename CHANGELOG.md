@@ -9,6 +9,17 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.64.0 — 2026-07-25
+
+**Hunting a MOC part now matches the colour you actually need.**
+
+- The **Found N in sets** / **Found N in donor** links on a MOC parts-list row counted every colour of that mould as one number. They now count the pieces in **the colour that line wants**, with a dim **+N other** for the same part in other colours.
+- Tapping a link opens the source sheet **split into two sections**: **✓ &lt;colour&gt; — exact colour** first (green-edged rows, colour name highlighted, most pieces first), then **Other colours** grouped by colour name. Each section shows its own piece count, and the sheet header names the colour being hunted.
+- A line with **no exact match** says so — `No Green in your sets — only other colours below.` — then lists the alternatives, so pulling a substitute is still one tap (and the row's colour is spelled out before you do).
+- Matching prefers the **Rebrickable colour id** when the MOC line carries one (set via **Edit part**), falling back to the **colour name** — so BrickLink / Studio imports, which only carry a name, match too. A line with no colour set behaves exactly as before (one flat list).
+
+-----
+
 ## v0.63.0 — 2026-07-25
 
 **Add buy follows the tab you're in, the date field works, and bulk buys total up their sets' RRP.**

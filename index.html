@@ -96,8 +96,13 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.63.0";
+const APP_VERSION = "0.64.0";
 const CHANGELOG = [
+  ["0.64.0", "2026-07-25", [
+    "MOC parts hunt is now colour-aware. “Found N in sets / in donor” counts the pieces in the COLOUR that line of the MOC actually wants, with a dim “+N other” for the same mould in other colours — instead of one number lumping every colour together.",
+    "Tapping it opens the sets split into two sections: ✓ <colour> — exact colour first (green-edged rows, most pieces first), then Other colours grouped by colour name. Each section shows its piece count, and a line with no exact match says so before listing the alternatives.",
+    "Colour matching uses the Rebrickable colour id when the MOC line has one (set by Edit part), and falls back to the colour name — so imported BrickLink/Studio lists match too.",
+  ]],
   ["0.63.0", "2026-07-25", [
     "+ Add buy now opens on the segment you're standing in — tap it from the Regular tab and the form is already Regular (Loose tab → Loose / PAB). It always opened as Bulk before.",
     "Date purchased is no longer a blank-looking box: the field gets its native picker back (the app-wide input styling was stripping iOS's date control), the chosen date is spelled out beside it, and Today / Yesterday chips set it in one tap.",
@@ -2193,6 +2198,26 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   }, [index, mocs]);
   const imgIndexFor = pn => setData.img.get(partKey(pn)) || null;
   const sourcesFor = pn => setData.sources.get(partKey(pn)) || [];
+  // Colour-aware hunting: a MOC line wants a SPECIFIC colour, so a hit in that exact colour is worth
+  // more than the same mould in another colour. Match on Rebrickable colour id when both sides have
+  // one, else on colour name; a line with no colour set has no "exact" to match.
+  const wantedColorOf = w => (w.colorName || "").trim();
+  const sameColorAs = (w, part) => {
+    if (w.rbColorId != null && w.rbColorId !== "" && part.colorID != null) return String(w.rbColorId) === String(part.colorID);
+    const a = wantedColorOf(w).toLowerCase(), b = (part.colorName || "").trim().toLowerCase();
+    return !!a && a === b;
+  };
+  const freePcs = l => l.reduce((a, s) => a + s.free, 0);
+  // sets holding this part, split into the MOC's colour vs every other colour of the same mould
+  const splitSources = (w, kind) => {
+    const all = sourcesFor(w.partNum).filter(s => kind === "donor" ? s.donor : (!s.donor && !s.built));
+    const exact = [], other = [];
+    for (const s of all) (sameColorAs(w, s.part) ? exact : other).push(s);
+    const byFree = (a, b) => b.free - a.free;
+    exact.sort(byFree);
+    other.sort((a, b) => (a.part.colorName || "").localeCompare(b.part.colorName || "") || byFree(a, b));
+    return { exact, other, hasColor: !!wantedColorOf(w) || w.rbColorId != null };
+  };
   // pieces free in DONOR sets, and pieces free in other (non-donor) sets NOT marked built/assembled.
   // These are only AVAILABLE — they don't count toward have/need until you transfer them in (→).
   const donorFor = pn => sourcesFor(pn).reduce((a, s) => a + (s.donor ? s.free : 0), 0);
@@ -2534,6 +2559,15 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
               </button>
               ${open && html`<div style="margin-top:6px">
               ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i), dn = donorFor(w.partNum), av = inSetsFor(w.partNum), tr = allocFor(w.partNum);
+                // colour-split counts: exact = the MOC's colour, other = same mould, other colours
+                const dnS = splitSources(w, "donor"), avS = splitSources(w, "avail");
+                const srcLink = (s, kind, word, first) => {
+                  const e = freePcs(s.exact), o = freePcs(s.other);
+                  if (!e && !o) return null;
+                  const open = ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind, w }); };
+                  if (!s.hasColor) return html`<button style=${lnk} onClick=${open}>${first ? "Found " : ""}${e + o} in ${word}</button>`;
+                  return html`<button style=${lnk} onClick=${open}>${e > 0 ? `${first ? "Found " : ""}${e} in ${word}` : `0 in ${word}`}${o > 0 ? html`<span class="dim" style="font-weight:600"> +${o} other</span>` : ""}</button>`;
+                };
                 const border = picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)";
                 return html`<${SwipeRow} key=${i}
                   onEdit=${() => setEditWanted({ i, w })}
@@ -2546,8 +2580,8 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
                   <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => toggleSel(i)}>
                     <div class="clamp2" style="font-size:13px;line-height:1.25">${w.name || w.partNum}</div>
                     <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}${tr > 0 ? html` · <span style="color:var(--purple);font-weight:700">♻️${tr}</span>` : ""}${(dn > 0 || av > 0) ? html` · ${[
-                      dn > 0 && html`<button style=${lnk} onClick=${ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind: "donor" }); }}>Found ${dn} in donor</button>`,
-                      av > 0 && html`<button style=${lnk} onClick=${ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind: "avail" }); }}>${dn > 0 ? `${av} in sets` : `Found ${av} in sets`}</button>`,
+                      srcLink(dnS, "donor", "donor", true),
+                      srcLink(avS, "avail", "sets", !(dn > 0)),
                     ].filter(Boolean).map((el, j) => html`${j ? " • " : ""}${el}`)}` : ""}</div>
                     ${(() => { const pt = resolveTags(tags, partTagIds(w.partNum)); return pt.length ? html`<div style="margin-top:3px"><${TagChips} tags=${pt} small /></div>` : null; })()}
                   </div>
@@ -2680,22 +2714,37 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
       onSave=${patch => { const { i } = editWanted; upsertMoc({ ...moc, wanted: wanted.map((w, j) => j === i ? { ...w, ...patch } : w) }); setEditWanted(null); }} />`}
 
     ${sourceFor && (() => {
-      const all = sourcesFor(sourceFor.pn);
-      const list = sourceFor.kind === "donor" ? all.filter(s => s.donor) : all.filter(s => !s.donor && !s.built);
+      const w = sourceFor.w || { partNum: sourceFor.pn, colorName: "" };
+      const { exact, other, hasColor } = splitSources(w, sourceFor.kind);
+      const want = wantedColorOf(w) || "this colour";
+      const row = (s, off) => html`<div key=${s.meta.setNum + s.part.id} class="row" style=${`background:var(--panel);border:1px solid ${off ? "var(--line)" : "var(--green)"};border-radius:12px;padding:10px;margin-bottom:6px`}>
+        ${s.part.img ? html`<img class="partimg" src=${s.part.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
+        <div style="flex:1;min-width:0">
+          <div class="clamp2" style="font-size:13px">${s.meta.name}</div>
+          <div class="dim mono" style="font-size:11px">${s.meta.setNum} · <span style=${off ? "" : "color:var(--green);font-weight:700"}>${s.part.colorName || "—"}</span> · ${s.free} free${s.donor ? " · ♻️ donor" : ""}</div>
+        </div>
+        <button class="step" style="width:46px;color:var(--purple);border-color:var(--purple)" disabled=${s.free <= 0}
+          onClick=${() => take(s.meta, s.part, s.free)}>→</button>
+      </div>`;
       return html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setSourceFor(null); }}>
         <div class="sheet">
-          <${Header} title=${sourceFor.kind === "donor" ? "In donor sets" : "Found in sets"} sub=${sourceFor.pn} onBack=${() => setSourceFor(null)} />
+          <${Header} title=${sourceFor.kind === "donor" ? "In donor sets" : "Found in sets"}
+            sub=${`${sourceFor.pn}${hasColor ? ` · ${want}` : ""}`} onBack=${() => setSourceFor(null)} />
           <div class="dim" style="font-size:12px;margin-bottom:10px">${sourceFor.kind === "donor" ? "Sets you keep as ♻️ donors. Tap → to pull the part into this MOC." : "Tracked sets not marked built. Tap → to pull the part into this MOC."}</div>
-          ${list.length === 0 && html`<div class="card dim" style="text-align:center">None available right now.</div>`}
-          ${list.map(s => html`<div key=${s.meta.setNum + s.part.id} class="row" style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:6px">
-            ${s.part.img ? html`<img class="partimg" src=${s.part.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
-            <div style="flex:1;min-width:0">
-              <div class="clamp2" style="font-size:13px">${s.meta.name}</div>
-              <div class="dim mono" style="font-size:11px">${s.meta.setNum} · ${s.part.colorName || "—"} · ${s.free} free${s.donor ? " · ♻️ donor" : ""}</div>
-            </div>
-            <button class="step" style="width:46px;color:var(--purple);border-color:var(--purple)" disabled=${s.free <= 0}
-              onClick=${() => take(s.meta, s.part, s.free)}>→</button>
-          </div>`)}
+          ${exact.length + other.length === 0 && html`<div class="card dim" style="text-align:center">None available right now.</div>`}
+          ${!hasColor
+            ? [...exact, ...other].map(s => row(s, true))
+            : html`<div>
+              ${exact.length > 0 && html`<div>
+                <div class="label" style="margin:0 2px 6px;color:var(--green)">✓ ${want} — exact colour · ${freePcs(exact)} pc${freePcs(exact) === 1 ? "" : "s"}</div>
+                ${exact.map(s => row(s, false))}
+              </div>`}
+              ${exact.length === 0 && html`<div class="card dim" style="text-align:center;font-size:13px;padding:14px">No ${want} in ${sourceFor.kind === "donor" ? "donor sets" : "your sets"} — only other colours below.</div>`}
+              ${other.length > 0 && html`<div style="margin-top:10px">
+                <div class="label" style="margin:0 2px 6px">Other colours · ${freePcs(other)} pc${freePcs(other) === 1 ? "" : "s"}</div>
+                ${other.map(s => row(s, true))}
+              </div>`}
+            </div>`}
           <button class="btn" style="margin-top:6px" onClick=${() => setSourceFor(null)}>Done</button>
         </div>
       </div></${Portal}>`;
