@@ -9,6 +9,17 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.61.1 — 2026-07-25
+
+**Fix: the theme-update banner's Fetch button did nothing for some sets.**
+
+- A set whose Rebrickable theme is the **bare "Juniors" root** (nothing under it to promote) resolved straight back to `"Juniors"` in `rootTheme()` — so it stayed in the "needs a theme update" list and every tap of **Fetch** left it exactly where it was. `rootTheme()` now returns `null` for that case, so the set files under **Other** and the banner clears. Sets under a Juniors *sub*-theme are unaffected (Juniors > City → **City**, Juniors > Disney Princess → **Disney**).
+- The same rule now applies to the silent on-open remap, so these sets are fixed without a tap when the theme tree is cached.
+- **Fetch re-pulls the theme tree** (`fetchThemesMap(true)`) instead of reusing the cached copy — a stale or partial cached tree was the other reason sets stayed unresolved. If the refresh fails it falls back to the cached tree rather than erroring out.
+- **One bad set number no longer aborts the backfill**: the per-set lookup for records with no stored `themeId` is caught individually, the remaining sets still update, and the banner reports `N updated · M sets couldn't be fetched — tap Fetch to retry`.
+
+-----
+
 ## v0.61.0 — 2026-07-25
 
 **↻ Bulk add is queue-first** — enter every set number first, fetch + save them in one run.

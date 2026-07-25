@@ -93,8 +93,13 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.61.0";
+const APP_VERSION = "0.61.1";
 const CHANGELOG = [
+  ["0.61.1", "2026-07-25", [
+    "Fixed: the theme-update banner's Fetch button did nothing for a set filed directly on the bare “Juniors” theme (no sub-theme under it). Such a set resolved back to “Juniors”, so it stayed in the banner no matter how many times you tapped Fetch. A set with no sub-theme to promote now files under Other and the banner clears.",
+    "The banner's Fetch now re-pulls the Rebrickable theme tree instead of reusing the cached copy (a stale/partial cached tree was the other way sets stayed unresolved); it falls back to the cache if that request fails.",
+    "One set number that can't be fetched no longer aborts the whole theme backfill — the rest still update, and the banner reports how many failed so you can retry.",
+  ]],
   ["0.61.0", "2026-07-25", [
     "↻ Bulk add is now queue-first: type (or scan) every set number into a list, then tap Fetch + save N sets once to pull and save the lot into the buys picked above. No more waiting on each fetch before typing the next number. Enter or ＋ Add queues a number; pasting several at once (spaces, commas, newlines) queues them all.",
     "Each queued row shows its own result as the run goes — ✓ saved (with the set name), ✕ failed (with the reason), – skipped. Failed rows stay queued so the button re-runs just those; ×  drops a row, Clear done / Clear all empty the list. The queue survives leaving the Add page (it rides along in the add draft).",
@@ -928,18 +933,25 @@ function partDbColorImg(partNum, { rbColorId, colorName } = {}) {
 }
 
 // ---------- themes (Rebrickable theme list cached once; sets store their ROOT theme name) ----------
-async function fetchThemesMap() {
+// force = re-pull the tree even when cached (the theme-update banner's Fetch: a stale/partial cached
+// tree is exactly what leaves sets unresolved). Falls back to the cache if the refresh fails.
+async function fetchThemesMap(force = false) {
   const cached = load("bt:themes", null);
-  if (cached?.map) return cached.map;
-  let url = "https://rebrickable.com/api/v3/lego/themes/?page_size=1000";
-  const map = {};
-  while (url) {
-    const j = await rbFetch(url);
-    for (const t of (j.results || [])) map[t.id] = [t.name, t.parent_id];
-    url = j.next;
+  if (!force && cached?.map) return cached.map;
+  try {
+    let url = "https://rebrickable.com/api/v3/lego/themes/?page_size=1000";
+    const map = {};
+    while (url) {
+      const j = await rbFetch(url);
+      for (const t of (j.results || [])) map[t.id] = [t.name, t.parent_id];
+      url = j.next;
+    }
+    save("bt:themes", { fetched: Date.now(), map });
+    return map;
+  } catch (e) {
+    if (cached?.map) return cached.map;
+    throw e;
   }
-  save("bt:themes", { fetched: Date.now(), map });
-  return map;
 }
 // "Juniors" (and the old "4 Juniors") is a shelf brand, not a theme — sets under it group by
 // their sub-theme instead, resolved to the same root the mainline theme uses (Juniors > Disney
@@ -967,7 +979,10 @@ function rootTheme(map, id) {
   const path = themePath(map, id);
   if (!path.length) return null;
   const rootName = map[path[0]][0];
-  if (JUNIOR_ROOTS.has(rootName) && path.length > 1) {
+  if (JUNIOR_ROOTS.has(rootName)) {
+    // a set filed on the BARE Juniors root has no sub-theme to promote — unresolvable, never
+    // "Juniors" (returning it here left such sets stuck in the theme-update banner forever)
+    if (path.length === 1) return null;
     const sub = map[path[1]][0];
     return mainlineRoot(map, sub) || sub;
   }
@@ -3137,8 +3152,8 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
       if (!JUNIOR_ROOTS.has(e.theme)) continue;
       const rec = structuredClone(load(`bt:set:${e.setNum}`, null));
       if (!rec?.themeId) continue;
-      const t = rootTheme(map, rec.themeId);
-      if (t && t !== rec.theme) { rec.theme = t; persistSet(rec); }
+      const t = rootTheme(map, rec.themeId) || "Other"; // bare-Juniors sets file under Other
+      if (t !== rec.theme) { rec.theme = t; persistSet(rec); }
     }
   }, []);
 
@@ -3148,20 +3163,23 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   async function fetchThemes() {
     if (!getKey().trim()) { setBackfill("Add your Rebrickable key in Settings first."); return; }
     try {
-      const map = await fetchThemesMap();
-      let i = 0;
+      const map = await fetchThemesMap(true); // this button IS the "my themes are wrong" action
+      let i = 0, fixed = 0, failed = 0;
       for (const e of missingTheme) {
         setBackfill(`Fetching themes… ${++i}/${missingTheme.length}`);
         const rec = structuredClone(load(`bt:set:${e.setNum}`, null));
         if (!rec) continue;
         if (!rec.themeId) { // only hit the API when the set never stored its theme id
-          const m = await rbFetch(`https://rebrickable.com/api/v3/lego/sets/${e.setNum}/`);
-          rec.themeId = m.theme_id;
+          try {
+            const m = await rbFetch(`https://rebrickable.com/api/v3/lego/sets/${e.setNum}/`);
+            rec.themeId = m.theme_id;
+          } catch { failed++; continue; } // one dead set number must not abort the whole backfill
         }
         rec.theme = rootTheme(map, rec.themeId) || "Other";
         persistSet(rec);
+        fixed++;
       }
-      setBackfill("");
+      setBackfill(failed ? `${fixed} updated · ${failed} set${failed === 1 ? "" : "s"} couldn't be fetched — tap Fetch to retry.` : "");
     } catch (e) { setBackfill("Theme fetch failed: " + (e.message || e)); }
   }
 
