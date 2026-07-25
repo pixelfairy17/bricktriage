@@ -9,6 +9,19 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.61.0 — 2026-07-25
+
+**↻ Bulk add is queue-first** — enter every set number first, fetch + save them in one run.
+
+- **Add set → ↻ Bulk** no longer fetches on each number. The set-number field now has **＋ Add** (Enter works too) which pushes the number onto a **queue**; pasting a batch (`75281 75192, 10497`) queues them all at once. A **📷 Scan** hit (or a set picked from the part finder) drops into the queue instead of fetching.
+- One tap of **Fetch + save N sets** runs the whole list in order, saving each into the buy(s) picked above (unchanged: buy link, ✨ New autofill for receipt-linked sets).
+- **Per-row status** updates live during the run: `⏳` fetching → `✓` saved (shows the set name), `✕` failed (shows the reason), `–` skipped, `＋` extra copy. The run finishes with a one-line summary (`2 saved · 1 extra copy · 1 failed → Garage lot`).
+- **Failed rows stay queued** — the button re-runs only what's still pending/failed. `×` removes a row, **Clear done** drops the finished ones, **Clear all** empties the queue. Re-adding a number that already ran re-arms that row.
+- **Already-tracked numbers are caught before the run**: the row is flagged yellow with a **skip ↔ ＋ copy** toggle (needs a linked buy). `＋ copy` logs another copy against the linked buy(s) — same behaviour as the single-set **＋ Add another copy** — and `skip` (the default) leaves the set alone. Duplicates *within* the queue are collapsed to one row.
+- The queue is stored in the existing add-page draft, so tabbing away and back doesn't lose it.
+
+-----
+
 ## v0.60.0 — 2026-07-15
 
 **No more "Juniors" theme group** — Juniors sets merge into their real theme.
