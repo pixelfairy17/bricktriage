@@ -35,6 +35,9 @@
   input, select, textarea { width:100%; background:var(--panel2); border:1px solid var(--line);
     border-radius:10px; padding:12px; color:var(--text); font-size:16px; -webkit-appearance:none; appearance:none; }
   input::placeholder, textarea::placeholder { color:var(--dim); }
+  /* the blanket appearance:none above strips iOS's date control, leaving what looks like an empty,
+     un-tappable box — give date fields their native picker back (and a finger-sized target) */
+  input[type="date"] { -webkit-appearance:auto; appearance:auto; min-height:48px; }
   button { cursor:pointer; }
   button:active { transform:scale(.985); }
   .btn { width:100%; background:var(--yellow); color:#1C1A17; border:none; border-radius:10px;
@@ -93,8 +96,14 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.62.0";
+const APP_VERSION = "0.63.0";
 const CHANGELOG = [
+  ["0.63.0", "2026-07-25", [
+    "+ Add buy now opens on the segment you're standing in — tap it from the Regular tab and the form is already Regular (Loose tab → Loose / PAB). It always opened as Bulk before.",
+    "Date purchased is no longer a blank-looking box: the field gets its native picker back (the app-wide input styling was stripping iOS's date control), the chosen date is spelled out beside it, and Today / Yesterday chips set it in one tap.",
+    "Bulk / Loose buy detail: new RRP for sets line between Price paid and the parts estimate — the summed RRP of every set linked to that buy, with how many of them are priced (2/3) and the % saved against what you paid for the lot.",
+    "RRP can now be typed straight onto each set row in the buy detail — price the whole lot up without opening every set. Price paid / RRP are also always shown on a set now (they were hidden on used sets from bulk buys).",
+  ]],
   ["0.62.0", "2026-07-25", [
     "Duplicate sets now tell you WHERE they already are. In ↻ Bulk, a queued number you already track shows “Already tracked in eBay Jan ×2 (this buy) · Garage lot ×1” — every buy holding a copy, with its qty, and the buy(s) currently linked on the Add page marked “(this buy)”. No more leaving the add flow to go and look. The single-set “already tracked” card gets the same line.",
     "Juniors sets with no sub-theme KEEP the Juniors theme (they were being pushed to Other). There's nothing under the bare Juniors root to promote them to, so they stay put — and the theme-update banner now marks them checked instead of asking about them forever.",
@@ -1433,6 +1442,13 @@ function BuyForm({ categories, initial, submitLabel = "Add buy", onAdd, onCancel
           onInput=${e => setPrice(e.target.value)} />`}
     <div style="height:8px"></div>
     <${Label}>Date purchased</${Label}>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
+      <${Chip} label="Today" color="var(--yellow)" active=${dateStr === toDateStr(Date.now())}
+        onClick=${() => setDateStr(toDateStr(Date.now()))} />
+      <${Chip} label="Yesterday" color="var(--yellow)" active=${dateStr === toDateStr(Date.now() - 864e5)}
+        onClick=${() => setDateStr(toDateStr(Date.now() - 864e5))} />
+      <span class="mono dim" style="font-size:13px;font-weight:700">${fmtDate(fromDateStr(dateStr))}</span>
+    </div>
     <input type="date" value=${dateStr} onChange=${e => e.target.value && setDateStr(e.target.value)} />
     ${kind === "regular" && !isEdit && html`<div class="dim" style="font-size:12px;margin-top:8px">Saves as "${autoName()}"</div>`}
     <div style="height:10px"></div>
@@ -4332,7 +4348,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
           ? html`<${RemainingRing} needed=${rstats.needed} remaining=${rstats.remaining} parted=${rstats.parted} missing=${rstats.missing} size=${64} />`
           : html`<${Ring} pct=${pct} size=${64} />`}
       </div>
-      ${(isNew || rec.pricePaid > 0 || (rec.buyIds || []).some(id => { const b = buys.find(x => x.id === id); return b && (b.kind || "bulk") === "regular"; })) && html`<div class="row" style="gap:10px;margin-top:12px">
+      ${/* always available: a used set out of a bulk lot still has an RRP worth recording */ ""}
+      <div class="row" style="gap:10px;margin-top:12px">
         <div style="flex:1">
           <div style="font-size:11px;font-weight:700;color:var(--green);margin-bottom:4px">Price paid</div>
           <input inputmode="decimal" placeholder="—" value=${rec.pricePaid || ""}
@@ -4343,7 +4360,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
           <input inputmode="decimal" placeholder="—" value=${rec.rrp || ""}
             onChange=${e => change(r => { const v = parseFloat(e.target.value); r.rrp = isNaN(v) || v <= 0 ? 0 : v; return r; })} />
         </div>
-      </div>`}
+      </div>
       ${photos.length > 1 && html`<div style="display:flex;gap:8px;overflow-x:auto;margin-top:12px">
         ${photos.map((p, i) => html`<img key=${p.kind} src=${p.src}
           style=${`width:56px;height:56px;object-fit:contain;background:#fff;border-radius:8px;flex-shrink:0;border:${i === defaultIdx ? "2px solid var(--yellow)" : "1px solid var(--line)"}`}
@@ -5488,6 +5505,14 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
     if (c) c.qty += 1; else rec.copies.push(newCopy(buyId));
     persistSet?.(rec);
   };
+  // price a lot up without leaving the buy: RRP typed on a linked-set row writes to that set
+  const setSetRrp = (setNum, raw) => {
+    const rec = structuredClone(load(`bt:set:${setNum}`, null));
+    if (!rec) return;
+    const v = parseFloat(raw);
+    rec.rrp = isNaN(v) || v <= 0 ? 0 : v;
+    persistSet?.(rec);
+  };
   const linkMerchToBuy = (merchId, buyId) => {
     const m = merch.find(x => x.id === merchId);
     if (m) upsertMerch?.({ ...m, buyIds: [...(m.buyIds || []), buyId] });
@@ -5575,7 +5600,8 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
   const addModal = showForm && html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setShowForm(false); }}>
     <div class="sheet">
       <${Header} title="New buy" onBack=${() => setShowForm(false)} />
-      <${BuyForm} categories=${cats} onCancel=${() => setShowForm(false)}
+      ${/* open on the segment you're standing in — Regular tab → Regular buy */ ""}
+      <${BuyForm} categories=${cats} initial=${{ kind: kindF === "nobuy" ? "bulk" : kindF }} onCancel=${() => setShowForm(false)}
         onAdd=${b => { addBuy(b); setShowForm(false); setOpenBuyId(b.id); }} />
     </div>
   </div></${Portal}>`;
@@ -5669,12 +5695,20 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
         ${(() => {
           const rs = sets.reduce((a, e) => a + (e.valueSet || 0), 0);
           const rp = sets.reduce((a, e) => a + (e.valuePartOut || 0), 0);
+          // RRP of the sets linked to THIS buy — for a bulk/loose lot that's the sticker value of
+          // what came out of it. (A regular receipt already derives its RRP line from its sets.)
+          const setsRrp = sets.reduce((a, e) => a + (e.rrp || 0), 0);
+          const paidNow = buyKind(openBuy) === "regular" ? 0 : (openBuy.price || 0);
           let pn = 0, pval = 0, tn = 0, tval = 0;
           for (const e of sets) {
             pn += e.foundQty || 0; pval += e.foundVal || 0;
             tn += e.fullQty || 0; tval += e.fullVal || 0;
           }
           return html`
+            ${(!isReg && setsRrp > 0) ? html`<div class="row" style="justify-content:space-between;margin-top:8px">
+              <span class="dim" style="font-size:13px">RRP for sets · ${sets.filter(e => (e.rrp || 0) > 0).length}/${sets.length}${paidNow > 0 && setsRrp > paidNow ? ` · saved ${Math.round((1 - paidNow / setsRrp) * 100)}%` : ""}</span>
+              <span class="mono" style="font-size:13px;font-weight:700;color:var(--blue)">${money(setsRrp)}</span>
+            </div>` : ""}
             ${(rs || rp) ? html`<div class="row" style="justify-content:space-between;margin-top:8px">
               <span class="dim" style="font-size:13px">Est. recovery</span>
               <span class="mono" style="font-size:13px;font-weight:700">
@@ -5758,18 +5792,27 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
         const cp = (e.copies || []).find(c => c.buyId === openBuy.id);
         const loc = cp ? [cp.storage, cp.builtLoc].filter(Boolean).join(" · ") : "";
         return html`
-        <div class="card row" style="cursor:pointer" onClick=${() => onOpenSet(e.setNum)}>
-          ${e.img ? html`<img class="setimg" src=${e.img} loading="lazy"/>` : html`<div class="setimg" style="background:var(--panel2)"></div>`}
-          <div style="flex:1;min-width:0">
-            <div class="row" style="gap:6px;min-width:0">
-              <span class="ellip" style="font-weight:700;min-width:0">${e.name}</span>
-              ${qtyHere(e) > 1 && html`<span class="badge" style="color:var(--purple);border:1px solid var(--purple);flex-shrink:0">×${qtyHere(e)}</span>`}
+        <div class="card">
+          <div class="row" style="cursor:pointer" onClick=${() => onOpenSet(e.setNum)}>
+            ${e.img ? html`<img class="setimg" src=${e.img} loading="lazy"/>` : html`<div class="setimg" style="background:var(--panel2)"></div>`}
+            <div style="flex:1;min-width:0">
+              <div class="row" style="gap:6px;min-width:0">
+                <span class="ellip" style="font-weight:700;min-width:0">${e.name}</span>
+                ${qtyHere(e) > 1 && html`<span class="badge" style="color:var(--purple);border:1px solid var(--purple);flex-shrink:0">×${qtyHere(e)}</span>`}
+              </div>
+              <div class="dim mono" style="font-size:12px">${e.setNum} · ${e.year}</div>
+              ${loc && html`<div class="dim ellip" style="font-size:11px">📍 ${loc}</div>`}
+              <span style=${`font-size:11px;font-weight:700;color:${triageOf(e.triage).color}`}>${triageOf(e.triage).label}</span>
             </div>
-            <div class="dim mono" style="font-size:12px">${e.setNum} · ${e.year}</div>
-            ${loc && html`<div class="dim ellip" style="font-size:11px">📍 ${loc}</div>`}
-            <span style=${`font-size:11px;font-weight:700;color:${triageOf(e.triage).color}`}>${triageOf(e.triage).label}</span>
+            <${Ring} pct=${e.pct} />
           </div>
-          <${Ring} pct=${e.pct} />
+          ${/* RRP straight from the buy — no need to open each set to price the lot up */ ""}
+          <div class="row" style="gap:8px;margin-top:8px" onClick=${ev => ev.stopPropagation()}>
+            <span class="dim" style="font-size:12px;flex:1">RRP${(e.rrp || 0) > 0 && (e.pricePaid || 0) > 0 && e.rrp > e.pricePaid ? ` · −${Math.round((1 - e.pricePaid / e.rrp) * 100)}%` : ""}</span>
+            <input inputmode="decimal" placeholder="—" value=${e.rrp || ""}
+              style="width:110px;flex-shrink:0;text-align:right;padding:8px 10px;font-size:14px"
+              onChange=${ev => setSetRrp(e.setNum, ev.target.value)} />
+          </div>
         </div>`; })}
       ${(() => {
         const merchHere = merch.filter(m => (m.buyIds || []).includes(openBuy.id));

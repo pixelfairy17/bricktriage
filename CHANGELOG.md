@@ -9,6 +9,18 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.63.0 — 2026-07-25
+
+**Add buy follows the tab you're in, the date field works, and bulk buys total up their sets' RRP.**
+
+- **+ Add buy opens on the active segment.** The New buy sheet is seeded with the segment you're standing in — **Regular** tab → a Regular buy, **Loose** tab → Loose / PAB. It always opened as **Bulk** regardless of the tab before (No Buy still falls back to Bulk, since it isn't a buy kind you can create).
+- **Date purchased is properly selectable.** The app-wide `appearance:none` on inputs was stripping iOS's native date control, leaving what reads as an empty box; date fields now keep their native picker and a finger-sized target. The chosen date is also spelled out (`Jul 25, 2026`) beside **Today** / **Yesterday** chips that set it in one tap.
+- **RRP for sets** — a new line in the Bulk / Loose buy detail, between **Price paid** and the parts estimate: the summed RRP of every set linked to that buy, how many of them carry an RRP (`2/3`), and the **% saved** against what the lot cost. Regular receipts are unchanged — their RRP line is already derived from their linked sets.
+- **Enter set RRP from the buy.** Each linked-set row in the buy detail gets an inline **RRP** box (with `−N%` against that set's price paid when both are set) writing straight to the set — price a whole lot up without opening each set in turn.
+- A set's **Price paid / RRP** pair is now always shown on its detail screen. It used to appear only for New sets, sets with a price already, or sets linked to a receipt — so a used set out of a bulk lot had nowhere to record an RRP.
+
+-----
+
 ## v0.62.0 — 2026-07-25
 
 **Duplicates say which buys they're in; Juniors sets keep their theme and any set can be rethemed by hand.**
