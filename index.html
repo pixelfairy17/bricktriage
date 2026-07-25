@@ -93,10 +93,15 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.61.1";
+const APP_VERSION = "0.62.0";
 const CHANGELOG = [
+  ["0.62.0", "2026-07-25", [
+    "Duplicate sets now tell you WHERE they already are. In ↻ Bulk, a queued number you already track shows “Already tracked in eBay Jan ×2 (this buy) · Garage lot ×1” — every buy holding a copy, with its qty, and the buy(s) currently linked on the Add page marked “(this buy)”. No more leaving the add flow to go and look. The single-set “already tracked” card gets the same line.",
+    "Juniors sets with no sub-theme KEEP the Juniors theme (they were being pushed to Other). There's nothing under the bare Juniors root to promote them to, so they stay put — and the theme-update banner now marks them checked instead of asking about them forever.",
+    "Retheme any set by hand: a 🎨 chip on the set detail opens a theme picker — pick one already in your collection (with counts) or type your own. A hand-set theme is marked ✎ and is never overwritten by a theme update; ↺ Back to automatic hands it back to Rebrickable's theme tree.",
+  ]],
   ["0.61.1", "2026-07-25", [
-    "Fixed: the theme-update banner's Fetch button did nothing for a set filed directly on the bare “Juniors” theme (no sub-theme under it). Such a set resolved back to “Juniors”, so it stayed in the banner no matter how many times you tapped Fetch. A set with no sub-theme to promote now files under Other and the banner clears.",
+    "Fixed: the theme-update banner's Fetch button did nothing for a set filed directly on the bare “Juniors” theme (no sub-theme under it). Such a set re-resolved to “Juniors” every time, so it stayed in the banner no matter how many times you tapped Fetch — it's now marked as checked and the banner clears.",
     "The banner's Fetch now re-pulls the Rebrickable theme tree instead of reusing the cached copy (a stale/partial cached tree was the other way sets stayed unresolved); it falls back to the cache if that request fails.",
     "One set number that can't be fetched no longer aborts the whole theme backfill — the rest still update, and the banner reports how many failed so you can retry.",
   ]],
@@ -803,7 +808,8 @@ const indexEntry = rec => {
     img: rec.imgDefault === "box" ? blBoxImg(rec.setNum) : rec.img, triage: rec.triage,
     instructions: rec.instructions, found, total, pct, dateAdded: rec.dateAdded, lastPartAt: rec.lastPartAt || null, buyIds: rec.buyIds || [],
     copies: copiesOf(rec).map(c => ({ buyId: c.buyId || null, qty: Math.max(1, c.qty || 1), storage: c.storage || "", builtLoc: c.builtLoc || "" })),
-    theme: rec.theme || null, bookletQty: (rec.booklets || []).length, donor: !!rec.donor,
+    theme: rec.theme || null, themeChecked: !!rec.themeChecked, themeManual: !!rec.themeManual,
+    bookletQty: (rec.booklets || []).length, donor: !!rec.donor,
     condition: condOfSet(rec), built: !!rec.built, building: !!rec.building,
     pricePaid: rec.pricePaid || 0, rrp: rec.rrp || 0, boxHas: !!rec.box?.has,
     valueSet: rec.valueSet || null, valuePartOut: rec.valuePartOut || null, ...partsVal(rec.parts) };
@@ -979,13 +985,12 @@ function rootTheme(map, id) {
   const path = themePath(map, id);
   if (!path.length) return null;
   const rootName = map[path[0]][0];
-  if (JUNIOR_ROOTS.has(rootName)) {
-    // a set filed on the BARE Juniors root has no sub-theme to promote — unresolvable, never
-    // "Juniors" (returning it here left such sets stuck in the theme-update banner forever)
-    if (path.length === 1) return null;
+  if (JUNIOR_ROOTS.has(rootName) && path.length > 1) {
     const sub = map[path[1]][0];
     return mainlineRoot(map, sub) || sub;
   }
+  // a set filed on the BARE Juniors root has no sub-theme to promote — it stays "Juniors" and is
+  // flagged themeChecked so the theme-update banner stops asking; retheme it by hand in the set.
   return rootName;
 }
 
@@ -995,7 +1000,9 @@ async function fetchFullSet(setNum, onProgress) {
   let theme = null;
   try { const map = await fetchThemesMap(); theme = rootTheme(map, m.theme_id) || "Other"; } catch {}
   const meta = { setNum: m.set_num, name: m.name, year: m.year, img: m.set_img_url, numParts: m.num_parts,
-    themeId: m.theme_id, theme };
+    // themeChecked: resolved against the theme tree just now — a bare-Juniors set keeps "Juniors"
+    // and must not land in the theme-update banner for it
+    themeId: m.theme_id, theme, themeChecked: theme != null };
   // inc_minifig_parts=0: keep the main parts list to the set's own bricks — minifig parts (hair,
   // torsos, etc.) are fetched separately into rec.minifigs, so excluding them here stops the
   // duplicate "hair in the parts list" rows.
@@ -3145,21 +3152,27 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   // v0.60: one-time silent remap of sets stored under "Juniors" — recompute from the cached theme
   // tree + stored themeId (no network). If the tree isn't cached yet, the backfill banner covers it.
   useEffect(() => {
-    if (!index.some(e => JUNIOR_ROOTS.has(e.theme))) return;
+    if (!index.some(e => JUNIOR_ROOTS.has(e.theme) && !e.themeChecked && !e.themeManual)) return;
     const map = load("bt:themes", null)?.map;
     if (!map) return;
     for (const e of index) {
-      if (!JUNIOR_ROOTS.has(e.theme)) continue;
+      if (!JUNIOR_ROOTS.has(e.theme) || e.themeChecked || e.themeManual) continue;
       const rec = structuredClone(load(`bt:set:${e.setNum}`, null));
       if (!rec?.themeId) continue;
-      const t = rootTheme(map, rec.themeId) || "Other"; // bare-Juniors sets file under Other
-      if (t !== rec.theme) { rec.theme = t; persistSet(rec); }
+      const t = rootTheme(map, rec.themeId);
+      // a bare-Juniors set has no sub-theme to promote — it keeps "Juniors", but the check is done
+      rec.themeChecked = true;
+      if (t && t !== rec.theme) rec.theme = t;
+      persistSet(rec);
     }
   }, []);
 
-  // theme backfill for sets added before v0.16 (+ Juniors remap when the theme tree isn't cached)
+  // theme backfill for sets added before v0.16 (+ Juniors remap when the theme tree isn't cached).
+  // A set the resolver has already had a go at (themeChecked), or one you themed by hand
+  // (themeManual), is never asked about again — otherwise bare-Juniors sets nag forever.
   const [backfill, setBackfill] = useState("");
-  const missingTheme = useMemo(() => index.filter(e => !e.theme || JUNIOR_ROOTS.has(e.theme)), [index]);
+  const missingTheme = useMemo(() => index.filter(e =>
+    !e.themeManual && (!e.theme || (JUNIOR_ROOTS.has(e.theme) && !e.themeChecked))), [index]);
   async function fetchThemes() {
     if (!getKey().trim()) { setBackfill("Add your Rebrickable key in Settings first."); return; }
     try {
@@ -3175,7 +3188,8 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
             rec.themeId = m.theme_id;
           } catch { failed++; continue; } // one dead set number must not abort the whole backfill
         }
-        rec.theme = rootTheme(map, rec.themeId) || "Other";
+        rec.theme = rootTheme(map, rec.themeId) || rec.theme || "Other";
+        rec.themeChecked = true; // resolved as far as the tree allows — don't ask again
         persistSet(rec);
         fixed++;
       }
@@ -3656,6 +3670,18 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   };
   const takeSetNum = num => { if (mode === "bulk") queueAdd(num); else { setNumRaw(num); go(num); } };
 
+  // where an already-tracked set already sits, so a duplicate doesn't force you out of the add flow
+  // to go looking: "Garage lot ×2 (this buy) · eBay Jan ×1"
+  const trackedIn = setNum => {
+    const rec = load(`bt:set:${setNum}`, null);
+    if (!rec) return "";
+    const where = copiesOf(rec).map(c => {
+      const b = buys.find(x => x.id === c.buyId);
+      return `${b ? b.label : "No buy"} ×${Math.max(1, c.qty || 1)}${c.buyId && buyIds.includes(c.buyId) ? " (this buy)" : ""}`;
+    });
+    return where.length ? where.join(" · ") : "no buy linked yet";
+  };
+
   // a fetched set → a saveable record, linked to the buy(s) picked above
   const buildRec = r => {
     const cond = defaultCondFromBuys(buyIds, buys);
@@ -3838,12 +3864,14 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
         </div>
         ${queue.map(r => {
           const isDup = r.status === "pending" && existing.includes(r.num);
-          const note = r.msg || (isDup ? (r.dupAction === "copy" ? "already tracked → log another copy" : "already tracked → will be skipped") : "");
           return html`<div key=${r.num} class="row" style=${`gap:8px;background:var(--panel2);border:1px solid ${isDup ? "var(--yellow)" : "var(--line)"};border-radius:10px;padding:8px 10px;margin-bottom:6px`}>
             <span style=${`flex-shrink:0;width:16px;text-align:center;font-weight:700;color:${QUEUE_COLOR[r.status]}`}>${QUEUE_ICON[r.status]}</span>
             <div style="flex:1;min-width:0">
               <div class="mono ellip" style="font-weight:700;font-size:13px">${r.num}</div>
-              ${note && html`<div class="dim ellip" style="font-size:11px">${note}</div>`}
+              ${isDup ? html`
+                <div style="font-size:11px;color:var(--yellow);font-weight:700">Already tracked in ${trackedIn(r.num)}</div>
+                <div class="dim" style="font-size:11px">${r.dupAction === "copy" ? "→ log another copy here" : "→ will be skipped"}</div>
+              ` : r.msg && html`<div class="dim ellip" style="font-size:11px">${r.msg}</div>`}
             </div>
             ${isDup && buyIds.length > 0 && html`<button class="chip" style=${`flex-shrink:0;border-color:${r.dupAction === "copy" ? "var(--green)" : "var(--line)"};color:${r.dupAction === "copy" ? "var(--green)" : "var(--dim)"}`}
               onClick=${() => queuePatch(r.num, { dupAction: r.dupAction === "copy" ? "skip" : "copy" })}>${r.dupAction === "copy" ? "＋ copy" : "skip"}</button>`}
@@ -3880,6 +3908,7 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
       const have = b => { const c = drec && copiesOf(drec).find(x => x.buyId === b.id); return c ? ` (have ×${c.qty})` : ""; };
       return html`<div class="card">
         <div style="font-weight:700;margin-bottom:4px">${dup} is already tracked</div>
+        <div style="font-size:13px;color:var(--yellow);font-weight:700;margin-bottom:6px">In ${trackedIn(dup)}</div>
         <div class="dim" style="font-size:13px;margin-bottom:10px">${chosen.length
           ? `Got another copy? Add it to ${chosen.map(b => b.label + have(b)).join(" + ")} — or open the set to log parts.`
           : "Got another copy? Link a buy above to add it into that buy — or open the set to log parts."}</div>
@@ -3936,6 +3965,36 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   </div>`;
 }
 
+// Manual theme override — pick a theme already in the collection or type your own. A theme set by
+// hand sticks: the theme-update banner and the Juniors remap both leave it alone (themeManual).
+function ThemePicker({ current, manual, onPick, onAuto, onClose }) {
+  const [q, setQ] = useState("");
+  const used = useMemo(() => {
+    const m = new Map();
+    for (const e of load("bt:index", [])) if (e.theme) m.set(e.theme, (m.get(e.theme) || 0) + 1);
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, []);
+  const typed = q.trim();
+  const shown = used.filter(([t]) => !typed || t.toLowerCase().includes(typed.toLowerCase()));
+  const isNew = typed && !used.some(([t]) => t.toLowerCase() === typed.toLowerCase());
+  return html`<div class="card">
+    <${Label}>Theme</${Label}>
+    <div class="dim" style="font-size:12px;margin-bottom:8px">Pick one you already use, or type your own. A theme you set by hand stays put — theme updates won't overwrite it.</div>
+    <input placeholder="Filter, or type a new theme…" value=${q} onInput=${e => setQ(e.target.value)} />
+    ${isNew && html`<div style="margin-top:8px"><button class="btn" onClick=${() => onPick(typed)}>Use “${typed}”</button></div>`}
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">
+      ${shown.map(([t, n]) => html`<button key=${t} class="chip"
+        style=${`border-color:${t === current ? "var(--purple)" : "var(--line)"};color:${t === current ? "var(--purple)" : "var(--text)"}`}
+        onClick=${() => onPick(t)}>${t} · ${n}</button>`)}
+      ${shown.length === 0 && !isNew && html`<span class="dim" style="font-size:12px">No themes in the collection yet.</span>`}
+    </div>
+    <div class="row" style="gap:8px;margin-top:12px">
+      ${manual && html`<button class="ghost" style="flex:1" onClick=${onAuto}>↺ Back to automatic</button>`}
+      <button class="ghost" style="flex:1" onClick=${onClose}>Close</button>
+    </div>
+  </div>`;
+}
+
 // ---------- Set detail ----------
 function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack, onDelete }) {
   const [rec, setRec] = useState(() => { const r = load(`bt:set:${setNum}`, null); return r ? normalizeCopies(r) : null; });
@@ -3946,6 +4005,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     if (r?.parts) partDbPutMany(r.parts.map(p => ({ partNum: p.partNumber, name: p.partName, colorID: p.colorID, colorName: p.colorName, colorImg: p.img })));
   }, [setNum]);
   const [tagPick, setTagPick] = useState(false);
+  const [themeEdit, setThemeEdit] = useState(false); // manual theme override (Juniors etc.)
   const [recatTick, setRecatTick] = useState(0); // bump to recompute type grouping after a recategorise
   const [q, setQ] = useState("");
   const [showSpares, setShowSpares] = useState(false);
@@ -4214,7 +4274,20 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
       ${myTags.length > 0 && html`<${TagChips} tags=${myTags} />`}
       <button class="chip" style="border-color:var(--purple);color:var(--purple)" onClick=${() => setTagPick(true)}>🏷 ${myTags.length ? "Edit tags" : "Add tags"}</button>
+      <button class="chip" style="border-color:var(--purple);color:var(--purple)"
+        onClick=${() => setThemeEdit(v => !v)}>🎨 ${rec.theme || "Set theme"}${rec.themeManual ? " ✎" : ""}</button>
     </div>
+    ${themeEdit && html`<${ThemePicker} current=${rec.theme || ""} manual=${!!rec.themeManual}
+      onClose=${() => setThemeEdit(false)}
+      onPick=${t => { change(r => { r.theme = t; r.themeManual = true; r.themeChecked = true; return r; }); setThemeEdit(false); }}
+      onAuto=${() => { change(r => {
+        r.themeManual = false; r.themeChecked = false;
+        // hand it back to the resolver right away when the theme tree is cached; otherwise the
+        // Sets theme-update banner picks it up on the next pass
+        const map = load("bt:themes", null)?.map;
+        if (map && r.themeId) { const t = rootTheme(map, r.themeId); if (t) { r.theme = t; r.themeChecked = true; } }
+        return r;
+      }); setThemeEdit(false); }} />`}
     <div class="card">
       <div class="row" style="gap:14px">
         ${photos.length > 0 && html`<img class="setimg" style="width:72px;height:72px" src=${photos[defaultIdx]?.src || rec.img}

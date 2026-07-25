@@ -9,12 +9,23 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.62.0 — 2026-07-25
+
+**Duplicates say which buys they're in; Juniors sets keep their theme and any set can be rethemed by hand.**
+
+- **"Already tracked" now names the buys.** A queued number in ↻ Bulk that's already tracked shows `Already tracked in eBay Jan ×2 (this buy) · Garage lot ×1` — every buy holding a copy, its qty, and `(this buy)` against whichever buy(s) are linked on the Add page right now. So a duplicate no longer means backing out of the bulk add to go and find where it lives. The single-set **already tracked** card carries the same line above its ＋ Add another copy button.
+- **Bare-Juniors sets keep the Juniors theme.** v0.61.1 pushed them to *Other*; there is nothing under the bare Juniors root to promote them to, so they now stay **Juniors** and are marked `themeChecked` — the theme-update banner records that the resolver has done all it can rather than asking about them forever. Juniors *sub*-themes still merge into the mainline theme (Juniors > City → **City**).
+- **Manual theme override.** Set detail gains a 🎨 chip next to 🏷 tags: it opens a picker listing every theme already in the collection (with counts) plus a box to type a new one. A hand-set theme is flagged `themeManual` (shown as ✎), is skipped by the Juniors remap and the theme backfill, and never appears in the banner. **↺ Back to automatic** hands the set back to Rebrickable's theme tree — recomputed on the spot when the tree is cached.
+- Sets fetched from Rebrickable are now stamped `themeChecked` at fetch time, so a newly added bare-Juniors set never shows up in the banner in the first place.
+
+-----
+
 ## v0.61.1 — 2026-07-25
 
 **Fix: the theme-update banner's Fetch button did nothing for some sets.**
 
-- A set whose Rebrickable theme is the **bare "Juniors" root** (nothing under it to promote) resolved straight back to `"Juniors"` in `rootTheme()` — so it stayed in the "needs a theme update" list and every tap of **Fetch** left it exactly where it was. `rootTheme()` now returns `null` for that case, so the set files under **Other** and the banner clears. Sets under a Juniors *sub*-theme are unaffected (Juniors > City → **City**, Juniors > Disney Princess → **Disney**).
-- The same rule now applies to the silent on-open remap, so these sets are fixed without a tap when the theme tree is cached.
+- A set whose Rebrickable theme is the **bare "Juniors" root** (nothing under it to promote) re-resolved to `"Juniors"` on every pass — so it stayed in the "needs a theme update" list and every tap of **Fetch** left it exactly where it was. It's now marked as checked once the resolver has been over it, so the banner clears. Sets under a Juniors *sub*-theme are unaffected (Juniors > City → **City**, Juniors > Disney Princess → **Disney**).
+- The same rule applies to the silent on-open remap, so these sets settle without a tap when the theme tree is cached.
 - **Fetch re-pulls the theme tree** (`fetchThemesMap(true)`) instead of reusing the cached copy — a stale or partial cached tree was the other reason sets stayed unresolved. If the refresh fails it falls back to the cached tree rather than erroring out.
 - **One bad set number no longer aborts the backfill**: the per-set lookup for records with no stored `themeId` is caught individually, the remaining sets still update, and the banner reports `N updated · M sets couldn't be fetched — tap Fetch to retry`.
 
