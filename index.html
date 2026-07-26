@@ -35,6 +35,9 @@
   input, select, textarea { width:100%; background:var(--panel2); border:1px solid var(--line);
     border-radius:10px; padding:12px; color:var(--text); font-size:16px; -webkit-appearance:none; appearance:none; }
   input::placeholder, textarea::placeholder { color:var(--dim); }
+  /* the blanket appearance:none above strips iOS's date control, leaving what looks like an empty,
+     un-tappable box — give date fields their native picker back (and a finger-sized target) */
+  input[type="date"] { -webkit-appearance:auto; appearance:auto; min-height:48px; }
   button { cursor:pointer; }
   button:active { transform:scale(.985); }
   .btn { width:100%; background:var(--yellow); color:#1C1A17; border:none; border-radius:10px;
@@ -93,8 +96,29 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.61.0";
+const APP_VERSION = "0.64.0";
 const CHANGELOG = [
+  ["0.64.0", "2026-07-25", [
+    "MOC parts hunt is now colour-aware. “Found N in sets / in donor” counts the pieces in the COLOUR that line of the MOC actually wants, with a dim “+N other” for the same mould in other colours — instead of one number lumping every colour together.",
+    "Tapping it opens the sets split into two sections: ✓ <colour> — exact colour first (green-edged rows, most pieces first), then Other colours grouped by colour name. Each section shows its piece count, and a line with no exact match says so before listing the alternatives.",
+    "Colour matching uses the Rebrickable colour id when the MOC line has one (set by Edit part), and falls back to the colour name — so imported BrickLink/Studio lists match too.",
+  ]],
+  ["0.63.0", "2026-07-25", [
+    "+ Add buy now opens on the segment you're standing in — tap it from the Regular tab and the form is already Regular (Loose tab → Loose / PAB). It always opened as Bulk before.",
+    "Date purchased is no longer a blank-looking box: the field gets its native picker back (the app-wide input styling was stripping iOS's date control), the chosen date is spelled out beside it, and Today / Yesterday chips set it in one tap.",
+    "Bulk / Loose buy detail: new RRP for sets line between Price paid and the parts estimate — the summed RRP of every set linked to that buy, with how many of them are priced (2/3) and the % saved against what you paid for the lot.",
+    "RRP can now be typed straight onto each set row in the buy detail — price the whole lot up without opening every set. Price paid / RRP are also always shown on a set now (they were hidden on used sets from bulk buys).",
+  ]],
+  ["0.62.0", "2026-07-25", [
+    "Duplicate sets now tell you WHERE they already are. In ↻ Bulk, a queued number you already track shows “Already tracked in eBay Jan ×2 (this buy) · Garage lot ×1” — every buy holding a copy, with its qty, and the buy(s) currently linked on the Add page marked “(this buy)”. No more leaving the add flow to go and look. The single-set “already tracked” card gets the same line.",
+    "Juniors sets with no sub-theme KEEP the Juniors theme (they were being pushed to Other). There's nothing under the bare Juniors root to promote them to, so they stay put — and the theme-update banner now marks them checked instead of asking about them forever.",
+    "Retheme any set by hand: a 🎨 chip on the set detail opens a theme picker — pick one already in your collection (with counts) or type your own. A hand-set theme is marked ✎ and is never overwritten by a theme update; ↺ Back to automatic hands it back to Rebrickable's theme tree.",
+  ]],
+  ["0.61.1", "2026-07-25", [
+    "Fixed: the theme-update banner's Fetch button did nothing for a set filed directly on the bare “Juniors” theme (no sub-theme under it). Such a set re-resolved to “Juniors” every time, so it stayed in the banner no matter how many times you tapped Fetch — it's now marked as checked and the banner clears.",
+    "The banner's Fetch now re-pulls the Rebrickable theme tree instead of reusing the cached copy (a stale/partial cached tree was the other way sets stayed unresolved); it falls back to the cache if that request fails.",
+    "One set number that can't be fetched no longer aborts the whole theme backfill — the rest still update, and the banner reports how many failed so you can retry.",
+  ]],
   ["0.61.0", "2026-07-25", [
     "↻ Bulk add is now queue-first: type (or scan) every set number into a list, then tap Fetch + save N sets once to pull and save the lot into the buys picked above. No more waiting on each fetch before typing the next number. Enter or ＋ Add queues a number; pasting several at once (spaces, commas, newlines) queues them all.",
     "Each queued row shows its own result as the run goes — ✓ saved (with the set name), ✕ failed (with the reason), – skipped. Failed rows stay queued so the button re-runs just those; ×  drops a row, Clear done / Clear all empty the list. The queue survives leaving the Add page (it rides along in the add draft).",
@@ -798,7 +822,8 @@ const indexEntry = rec => {
     img: rec.imgDefault === "box" ? blBoxImg(rec.setNum) : rec.img, triage: rec.triage,
     instructions: rec.instructions, found, total, pct, dateAdded: rec.dateAdded, lastPartAt: rec.lastPartAt || null, buyIds: rec.buyIds || [],
     copies: copiesOf(rec).map(c => ({ buyId: c.buyId || null, qty: Math.max(1, c.qty || 1), storage: c.storage || "", builtLoc: c.builtLoc || "" })),
-    theme: rec.theme || null, bookletQty: (rec.booklets || []).length, donor: !!rec.donor,
+    theme: rec.theme || null, themeChecked: !!rec.themeChecked, themeManual: !!rec.themeManual,
+    bookletQty: (rec.booklets || []).length, donor: !!rec.donor,
     condition: condOfSet(rec), built: !!rec.built, building: !!rec.building,
     pricePaid: rec.pricePaid || 0, rrp: rec.rrp || 0, boxHas: !!rec.box?.has,
     valueSet: rec.valueSet || null, valuePartOut: rec.valuePartOut || null, ...partsVal(rec.parts) };
@@ -928,18 +953,25 @@ function partDbColorImg(partNum, { rbColorId, colorName } = {}) {
 }
 
 // ---------- themes (Rebrickable theme list cached once; sets store their ROOT theme name) ----------
-async function fetchThemesMap() {
+// force = re-pull the tree even when cached (the theme-update banner's Fetch: a stale/partial cached
+// tree is exactly what leaves sets unresolved). Falls back to the cache if the refresh fails.
+async function fetchThemesMap(force = false) {
   const cached = load("bt:themes", null);
-  if (cached?.map) return cached.map;
-  let url = "https://rebrickable.com/api/v3/lego/themes/?page_size=1000";
-  const map = {};
-  while (url) {
-    const j = await rbFetch(url);
-    for (const t of (j.results || [])) map[t.id] = [t.name, t.parent_id];
-    url = j.next;
+  if (!force && cached?.map) return cached.map;
+  try {
+    let url = "https://rebrickable.com/api/v3/lego/themes/?page_size=1000";
+    const map = {};
+    while (url) {
+      const j = await rbFetch(url);
+      for (const t of (j.results || [])) map[t.id] = [t.name, t.parent_id];
+      url = j.next;
+    }
+    save("bt:themes", { fetched: Date.now(), map });
+    return map;
+  } catch (e) {
+    if (cached?.map) return cached.map;
+    throw e;
   }
-  save("bt:themes", { fetched: Date.now(), map });
-  return map;
 }
 // "Juniors" (and the old "4 Juniors") is a shelf brand, not a theme — sets under it group by
 // their sub-theme instead, resolved to the same root the mainline theme uses (Juniors > Disney
@@ -971,6 +1003,8 @@ function rootTheme(map, id) {
     const sub = map[path[1]][0];
     return mainlineRoot(map, sub) || sub;
   }
+  // a set filed on the BARE Juniors root has no sub-theme to promote — it stays "Juniors" and is
+  // flagged themeChecked so the theme-update banner stops asking; retheme it by hand in the set.
   return rootName;
 }
 
@@ -980,7 +1014,9 @@ async function fetchFullSet(setNum, onProgress) {
   let theme = null;
   try { const map = await fetchThemesMap(); theme = rootTheme(map, m.theme_id) || "Other"; } catch {}
   const meta = { setNum: m.set_num, name: m.name, year: m.year, img: m.set_img_url, numParts: m.num_parts,
-    themeId: m.theme_id, theme };
+    // themeChecked: resolved against the theme tree just now — a bare-Juniors set keeps "Juniors"
+    // and must not land in the theme-update banner for it
+    themeId: m.theme_id, theme, themeChecked: theme != null };
   // inc_minifig_parts=0: keep the main parts list to the set's own bricks — minifig parts (hair,
   // torsos, etc.) are fetched separately into rec.minifigs, so excluding them here stops the
   // duplicate "hair in the parts list" rows.
@@ -1411,6 +1447,13 @@ function BuyForm({ categories, initial, submitLabel = "Add buy", onAdd, onCancel
           onInput=${e => setPrice(e.target.value)} />`}
     <div style="height:8px"></div>
     <${Label}>Date purchased</${Label}>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
+      <${Chip} label="Today" color="var(--yellow)" active=${dateStr === toDateStr(Date.now())}
+        onClick=${() => setDateStr(toDateStr(Date.now()))} />
+      <${Chip} label="Yesterday" color="var(--yellow)" active=${dateStr === toDateStr(Date.now() - 864e5)}
+        onClick=${() => setDateStr(toDateStr(Date.now() - 864e5))} />
+      <span class="mono dim" style="font-size:13px;font-weight:700">${fmtDate(fromDateStr(dateStr))}</span>
+    </div>
     <input type="date" value=${dateStr} onChange=${e => e.target.value && setDateStr(e.target.value)} />
     ${kind === "regular" && !isEdit && html`<div class="dim" style="font-size:12px;margin-top:8px">Saves as "${autoName()}"</div>`}
     <div style="height:10px"></div>
@@ -2155,6 +2198,26 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   }, [index, mocs]);
   const imgIndexFor = pn => setData.img.get(partKey(pn)) || null;
   const sourcesFor = pn => setData.sources.get(partKey(pn)) || [];
+  // Colour-aware hunting: a MOC line wants a SPECIFIC colour, so a hit in that exact colour is worth
+  // more than the same mould in another colour. Match on Rebrickable colour id when both sides have
+  // one, else on colour name; a line with no colour set has no "exact" to match.
+  const wantedColorOf = w => (w.colorName || "").trim();
+  const sameColorAs = (w, part) => {
+    if (w.rbColorId != null && w.rbColorId !== "" && part.colorID != null) return String(w.rbColorId) === String(part.colorID);
+    const a = wantedColorOf(w).toLowerCase(), b = (part.colorName || "").trim().toLowerCase();
+    return !!a && a === b;
+  };
+  const freePcs = l => l.reduce((a, s) => a + s.free, 0);
+  // sets holding this part, split into the MOC's colour vs every other colour of the same mould
+  const splitSources = (w, kind) => {
+    const all = sourcesFor(w.partNum).filter(s => kind === "donor" ? s.donor : (!s.donor && !s.built));
+    const exact = [], other = [];
+    for (const s of all) (sameColorAs(w, s.part) ? exact : other).push(s);
+    const byFree = (a, b) => b.free - a.free;
+    exact.sort(byFree);
+    other.sort((a, b) => (a.part.colorName || "").localeCompare(b.part.colorName || "") || byFree(a, b));
+    return { exact, other, hasColor: !!wantedColorOf(w) || w.rbColorId != null };
+  };
   // pieces free in DONOR sets, and pieces free in other (non-donor) sets NOT marked built/assembled.
   // These are only AVAILABLE — they don't count toward have/need until you transfer them in (→).
   const donorFor = pn => sourcesFor(pn).reduce((a, s) => a + (s.donor ? s.free : 0), 0);
@@ -2496,6 +2559,15 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
               </button>
               ${open && html`<div style="margin-top:6px">
               ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i), dn = donorFor(w.partNum), av = inSetsFor(w.partNum), tr = allocFor(w.partNum);
+                // colour-split counts: exact = the MOC's colour, other = same mould, other colours
+                const dnS = splitSources(w, "donor"), avS = splitSources(w, "avail");
+                const srcLink = (s, kind, word, first) => {
+                  const e = freePcs(s.exact), o = freePcs(s.other);
+                  if (!e && !o) return null;
+                  const open = ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind, w }); };
+                  if (!s.hasColor) return html`<button style=${lnk} onClick=${open}>${first ? "Found " : ""}${e + o} in ${word}</button>`;
+                  return html`<button style=${lnk} onClick=${open}>${e > 0 ? `${first ? "Found " : ""}${e} in ${word}` : `0 in ${word}`}${o > 0 ? html`<span class="dim" style="font-weight:600"> +${o} other</span>` : ""}</button>`;
+                };
                 const border = picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)";
                 return html`<${SwipeRow} key=${i}
                   onEdit=${() => setEditWanted({ i, w })}
@@ -2508,8 +2580,8 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
                   <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => toggleSel(i)}>
                     <div class="clamp2" style="font-size:13px;line-height:1.25">${w.name || w.partNum}</div>
                     <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}${tr > 0 ? html` · <span style="color:var(--purple);font-weight:700">♻️${tr}</span>` : ""}${(dn > 0 || av > 0) ? html` · ${[
-                      dn > 0 && html`<button style=${lnk} onClick=${ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind: "donor" }); }}>Found ${dn} in donor</button>`,
-                      av > 0 && html`<button style=${lnk} onClick=${ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind: "avail" }); }}>${dn > 0 ? `${av} in sets` : `Found ${av} in sets`}</button>`,
+                      srcLink(dnS, "donor", "donor", true),
+                      srcLink(avS, "avail", "sets", !(dn > 0)),
                     ].filter(Boolean).map((el, j) => html`${j ? " • " : ""}${el}`)}` : ""}</div>
                     ${(() => { const pt = resolveTags(tags, partTagIds(w.partNum)); return pt.length ? html`<div style="margin-top:3px"><${TagChips} tags=${pt} small /></div>` : null; })()}
                   </div>
@@ -2642,22 +2714,37 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
       onSave=${patch => { const { i } = editWanted; upsertMoc({ ...moc, wanted: wanted.map((w, j) => j === i ? { ...w, ...patch } : w) }); setEditWanted(null); }} />`}
 
     ${sourceFor && (() => {
-      const all = sourcesFor(sourceFor.pn);
-      const list = sourceFor.kind === "donor" ? all.filter(s => s.donor) : all.filter(s => !s.donor && !s.built);
+      const w = sourceFor.w || { partNum: sourceFor.pn, colorName: "" };
+      const { exact, other, hasColor } = splitSources(w, sourceFor.kind);
+      const want = wantedColorOf(w) || "this colour";
+      const row = (s, off) => html`<div key=${s.meta.setNum + s.part.id} class="row" style=${`background:var(--panel);border:1px solid ${off ? "var(--line)" : "var(--green)"};border-radius:12px;padding:10px;margin-bottom:6px`}>
+        ${s.part.img ? html`<img class="partimg" src=${s.part.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
+        <div style="flex:1;min-width:0">
+          <div class="clamp2" style="font-size:13px">${s.meta.name}</div>
+          <div class="dim mono" style="font-size:11px">${s.meta.setNum} · <span style=${off ? "" : "color:var(--green);font-weight:700"}>${s.part.colorName || "—"}</span> · ${s.free} free${s.donor ? " · ♻️ donor" : ""}</div>
+        </div>
+        <button class="step" style="width:46px;color:var(--purple);border-color:var(--purple)" disabled=${s.free <= 0}
+          onClick=${() => take(s.meta, s.part, s.free)}>→</button>
+      </div>`;
       return html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setSourceFor(null); }}>
         <div class="sheet">
-          <${Header} title=${sourceFor.kind === "donor" ? "In donor sets" : "Found in sets"} sub=${sourceFor.pn} onBack=${() => setSourceFor(null)} />
+          <${Header} title=${sourceFor.kind === "donor" ? "In donor sets" : "Found in sets"}
+            sub=${`${sourceFor.pn}${hasColor ? ` · ${want}` : ""}`} onBack=${() => setSourceFor(null)} />
           <div class="dim" style="font-size:12px;margin-bottom:10px">${sourceFor.kind === "donor" ? "Sets you keep as ♻️ donors. Tap → to pull the part into this MOC." : "Tracked sets not marked built. Tap → to pull the part into this MOC."}</div>
-          ${list.length === 0 && html`<div class="card dim" style="text-align:center">None available right now.</div>`}
-          ${list.map(s => html`<div key=${s.meta.setNum + s.part.id} class="row" style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:6px">
-            ${s.part.img ? html`<img class="partimg" src=${s.part.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
-            <div style="flex:1;min-width:0">
-              <div class="clamp2" style="font-size:13px">${s.meta.name}</div>
-              <div class="dim mono" style="font-size:11px">${s.meta.setNum} · ${s.part.colorName || "—"} · ${s.free} free${s.donor ? " · ♻️ donor" : ""}</div>
-            </div>
-            <button class="step" style="width:46px;color:var(--purple);border-color:var(--purple)" disabled=${s.free <= 0}
-              onClick=${() => take(s.meta, s.part, s.free)}>→</button>
-          </div>`)}
+          ${exact.length + other.length === 0 && html`<div class="card dim" style="text-align:center">None available right now.</div>`}
+          ${!hasColor
+            ? [...exact, ...other].map(s => row(s, true))
+            : html`<div>
+              ${exact.length > 0 && html`<div>
+                <div class="label" style="margin:0 2px 6px;color:var(--green)">✓ ${want} — exact colour · ${freePcs(exact)} pc${freePcs(exact) === 1 ? "" : "s"}</div>
+                ${exact.map(s => row(s, false))}
+              </div>`}
+              ${exact.length === 0 && html`<div class="card dim" style="text-align:center;font-size:13px;padding:14px">No ${want} in ${sourceFor.kind === "donor" ? "donor sets" : "your sets"} — only other colours below.</div>`}
+              ${other.length > 0 && html`<div style="margin-top:10px">
+                <div class="label" style="margin:0 2px 6px">Other colours · ${freePcs(other)} pc${freePcs(other) === 1 ? "" : "s"}</div>
+                ${other.map(s => row(s, true))}
+              </div>`}
+            </div>`}
           <button class="btn" style="margin-top:6px" onClick=${() => setSourceFor(null)}>Done</button>
         </div>
       </div></${Portal}>`;
@@ -3130,38 +3217,48 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   // v0.60: one-time silent remap of sets stored under "Juniors" — recompute from the cached theme
   // tree + stored themeId (no network). If the tree isn't cached yet, the backfill banner covers it.
   useEffect(() => {
-    if (!index.some(e => JUNIOR_ROOTS.has(e.theme))) return;
+    if (!index.some(e => JUNIOR_ROOTS.has(e.theme) && !e.themeChecked && !e.themeManual)) return;
     const map = load("bt:themes", null)?.map;
     if (!map) return;
     for (const e of index) {
-      if (!JUNIOR_ROOTS.has(e.theme)) continue;
+      if (!JUNIOR_ROOTS.has(e.theme) || e.themeChecked || e.themeManual) continue;
       const rec = structuredClone(load(`bt:set:${e.setNum}`, null));
       if (!rec?.themeId) continue;
       const t = rootTheme(map, rec.themeId);
-      if (t && t !== rec.theme) { rec.theme = t; persistSet(rec); }
+      // a bare-Juniors set has no sub-theme to promote — it keeps "Juniors", but the check is done
+      rec.themeChecked = true;
+      if (t && t !== rec.theme) rec.theme = t;
+      persistSet(rec);
     }
   }, []);
 
-  // theme backfill for sets added before v0.16 (+ Juniors remap when the theme tree isn't cached)
+  // theme backfill for sets added before v0.16 (+ Juniors remap when the theme tree isn't cached).
+  // A set the resolver has already had a go at (themeChecked), or one you themed by hand
+  // (themeManual), is never asked about again — otherwise bare-Juniors sets nag forever.
   const [backfill, setBackfill] = useState("");
-  const missingTheme = useMemo(() => index.filter(e => !e.theme || JUNIOR_ROOTS.has(e.theme)), [index]);
+  const missingTheme = useMemo(() => index.filter(e =>
+    !e.themeManual && (!e.theme || (JUNIOR_ROOTS.has(e.theme) && !e.themeChecked))), [index]);
   async function fetchThemes() {
     if (!getKey().trim()) { setBackfill("Add your Rebrickable key in Settings first."); return; }
     try {
-      const map = await fetchThemesMap();
-      let i = 0;
+      const map = await fetchThemesMap(true); // this button IS the "my themes are wrong" action
+      let i = 0, fixed = 0, failed = 0;
       for (const e of missingTheme) {
         setBackfill(`Fetching themes… ${++i}/${missingTheme.length}`);
         const rec = structuredClone(load(`bt:set:${e.setNum}`, null));
         if (!rec) continue;
         if (!rec.themeId) { // only hit the API when the set never stored its theme id
-          const m = await rbFetch(`https://rebrickable.com/api/v3/lego/sets/${e.setNum}/`);
-          rec.themeId = m.theme_id;
+          try {
+            const m = await rbFetch(`https://rebrickable.com/api/v3/lego/sets/${e.setNum}/`);
+            rec.themeId = m.theme_id;
+          } catch { failed++; continue; } // one dead set number must not abort the whole backfill
         }
-        rec.theme = rootTheme(map, rec.themeId) || "Other";
+        rec.theme = rootTheme(map, rec.themeId) || rec.theme || "Other";
+        rec.themeChecked = true; // resolved as far as the tree allows — don't ask again
         persistSet(rec);
+        fixed++;
       }
-      setBackfill("");
+      setBackfill(failed ? `${fixed} updated · ${failed} set${failed === 1 ? "" : "s"} couldn't be fetched — tap Fetch to retry.` : "");
     } catch (e) { setBackfill("Theme fetch failed: " + (e.message || e)); }
   }
 
@@ -3638,6 +3735,18 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   };
   const takeSetNum = num => { if (mode === "bulk") queueAdd(num); else { setNumRaw(num); go(num); } };
 
+  // where an already-tracked set already sits, so a duplicate doesn't force you out of the add flow
+  // to go looking: "Garage lot ×2 (this buy) · eBay Jan ×1"
+  const trackedIn = setNum => {
+    const rec = load(`bt:set:${setNum}`, null);
+    if (!rec) return "";
+    const where = copiesOf(rec).map(c => {
+      const b = buys.find(x => x.id === c.buyId);
+      return `${b ? b.label : "No buy"} ×${Math.max(1, c.qty || 1)}${c.buyId && buyIds.includes(c.buyId) ? " (this buy)" : ""}`;
+    });
+    return where.length ? where.join(" · ") : "no buy linked yet";
+  };
+
   // a fetched set → a saveable record, linked to the buy(s) picked above
   const buildRec = r => {
     const cond = defaultCondFromBuys(buyIds, buys);
@@ -3820,12 +3929,14 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
         </div>
         ${queue.map(r => {
           const isDup = r.status === "pending" && existing.includes(r.num);
-          const note = r.msg || (isDup ? (r.dupAction === "copy" ? "already tracked → log another copy" : "already tracked → will be skipped") : "");
           return html`<div key=${r.num} class="row" style=${`gap:8px;background:var(--panel2);border:1px solid ${isDup ? "var(--yellow)" : "var(--line)"};border-radius:10px;padding:8px 10px;margin-bottom:6px`}>
             <span style=${`flex-shrink:0;width:16px;text-align:center;font-weight:700;color:${QUEUE_COLOR[r.status]}`}>${QUEUE_ICON[r.status]}</span>
             <div style="flex:1;min-width:0">
               <div class="mono ellip" style="font-weight:700;font-size:13px">${r.num}</div>
-              ${note && html`<div class="dim ellip" style="font-size:11px">${note}</div>`}
+              ${isDup ? html`
+                <div style="font-size:11px;color:var(--yellow);font-weight:700">Already tracked in ${trackedIn(r.num)}</div>
+                <div class="dim" style="font-size:11px">${r.dupAction === "copy" ? "→ log another copy here" : "→ will be skipped"}</div>
+              ` : r.msg && html`<div class="dim ellip" style="font-size:11px">${r.msg}</div>`}
             </div>
             ${isDup && buyIds.length > 0 && html`<button class="chip" style=${`flex-shrink:0;border-color:${r.dupAction === "copy" ? "var(--green)" : "var(--line)"};color:${r.dupAction === "copy" ? "var(--green)" : "var(--dim)"}`}
               onClick=${() => queuePatch(r.num, { dupAction: r.dupAction === "copy" ? "skip" : "copy" })}>${r.dupAction === "copy" ? "＋ copy" : "skip"}</button>`}
@@ -3862,6 +3973,7 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
       const have = b => { const c = drec && copiesOf(drec).find(x => x.buyId === b.id); return c ? ` (have ×${c.qty})` : ""; };
       return html`<div class="card">
         <div style="font-weight:700;margin-bottom:4px">${dup} is already tracked</div>
+        <div style="font-size:13px;color:var(--yellow);font-weight:700;margin-bottom:6px">In ${trackedIn(dup)}</div>
         <div class="dim" style="font-size:13px;margin-bottom:10px">${chosen.length
           ? `Got another copy? Add it to ${chosen.map(b => b.label + have(b)).join(" + ")} — or open the set to log parts.`
           : "Got another copy? Link a buy above to add it into that buy — or open the set to log parts."}</div>
@@ -3918,6 +4030,36 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   </div>`;
 }
 
+// Manual theme override — pick a theme already in the collection or type your own. A theme set by
+// hand sticks: the theme-update banner and the Juniors remap both leave it alone (themeManual).
+function ThemePicker({ current, manual, onPick, onAuto, onClose }) {
+  const [q, setQ] = useState("");
+  const used = useMemo(() => {
+    const m = new Map();
+    for (const e of load("bt:index", [])) if (e.theme) m.set(e.theme, (m.get(e.theme) || 0) + 1);
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, []);
+  const typed = q.trim();
+  const shown = used.filter(([t]) => !typed || t.toLowerCase().includes(typed.toLowerCase()));
+  const isNew = typed && !used.some(([t]) => t.toLowerCase() === typed.toLowerCase());
+  return html`<div class="card">
+    <${Label}>Theme</${Label}>
+    <div class="dim" style="font-size:12px;margin-bottom:8px">Pick one you already use, or type your own. A theme you set by hand stays put — theme updates won't overwrite it.</div>
+    <input placeholder="Filter, or type a new theme…" value=${q} onInput=${e => setQ(e.target.value)} />
+    ${isNew && html`<div style="margin-top:8px"><button class="btn" onClick=${() => onPick(typed)}>Use “${typed}”</button></div>`}
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">
+      ${shown.map(([t, n]) => html`<button key=${t} class="chip"
+        style=${`border-color:${t === current ? "var(--purple)" : "var(--line)"};color:${t === current ? "var(--purple)" : "var(--text)"}`}
+        onClick=${() => onPick(t)}>${t} · ${n}</button>`)}
+      ${shown.length === 0 && !isNew && html`<span class="dim" style="font-size:12px">No themes in the collection yet.</span>`}
+    </div>
+    <div class="row" style="gap:8px;margin-top:12px">
+      ${manual && html`<button class="ghost" style="flex:1" onClick=${onAuto}>↺ Back to automatic</button>`}
+      <button class="ghost" style="flex:1" onClick=${onClose}>Close</button>
+    </div>
+  </div>`;
+}
+
 // ---------- Set detail ----------
 function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack, onDelete }) {
   const [rec, setRec] = useState(() => { const r = load(`bt:set:${setNum}`, null); return r ? normalizeCopies(r) : null; });
@@ -3928,6 +4070,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     if (r?.parts) partDbPutMany(r.parts.map(p => ({ partNum: p.partNumber, name: p.partName, colorID: p.colorID, colorName: p.colorName, colorImg: p.img })));
   }, [setNum]);
   const [tagPick, setTagPick] = useState(false);
+  const [themeEdit, setThemeEdit] = useState(false); // manual theme override (Juniors etc.)
   const [recatTick, setRecatTick] = useState(0); // bump to recompute type grouping after a recategorise
   const [q, setQ] = useState("");
   const [showSpares, setShowSpares] = useState(false);
@@ -4196,7 +4339,20 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
     <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
       ${myTags.length > 0 && html`<${TagChips} tags=${myTags} />`}
       <button class="chip" style="border-color:var(--purple);color:var(--purple)" onClick=${() => setTagPick(true)}>🏷 ${myTags.length ? "Edit tags" : "Add tags"}</button>
+      <button class="chip" style="border-color:var(--purple);color:var(--purple)"
+        onClick=${() => setThemeEdit(v => !v)}>🎨 ${rec.theme || "Set theme"}${rec.themeManual ? " ✎" : ""}</button>
     </div>
+    ${themeEdit && html`<${ThemePicker} current=${rec.theme || ""} manual=${!!rec.themeManual}
+      onClose=${() => setThemeEdit(false)}
+      onPick=${t => { change(r => { r.theme = t; r.themeManual = true; r.themeChecked = true; return r; }); setThemeEdit(false); }}
+      onAuto=${() => { change(r => {
+        r.themeManual = false; r.themeChecked = false;
+        // hand it back to the resolver right away when the theme tree is cached; otherwise the
+        // Sets theme-update banner picks it up on the next pass
+        const map = load("bt:themes", null)?.map;
+        if (map && r.themeId) { const t = rootTheme(map, r.themeId); if (t) { r.theme = t; r.themeChecked = true; } }
+        return r;
+      }); setThemeEdit(false); }} />`}
     <div class="card">
       <div class="row" style="gap:14px">
         ${photos.length > 0 && html`<img class="setimg" style="width:72px;height:72px" src=${photos[defaultIdx]?.src || rec.img}
@@ -4241,7 +4397,8 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
           ? html`<${RemainingRing} needed=${rstats.needed} remaining=${rstats.remaining} parted=${rstats.parted} missing=${rstats.missing} size=${64} />`
           : html`<${Ring} pct=${pct} size=${64} />`}
       </div>
-      ${(isNew || rec.pricePaid > 0 || (rec.buyIds || []).some(id => { const b = buys.find(x => x.id === id); return b && (b.kind || "bulk") === "regular"; })) && html`<div class="row" style="gap:10px;margin-top:12px">
+      ${/* always available: a used set out of a bulk lot still has an RRP worth recording */ ""}
+      <div class="row" style="gap:10px;margin-top:12px">
         <div style="flex:1">
           <div style="font-size:11px;font-weight:700;color:var(--green);margin-bottom:4px">Price paid</div>
           <input inputmode="decimal" placeholder="—" value=${rec.pricePaid || ""}
@@ -4252,7 +4409,7 @@ function SetDetail({ setNum, buys, cats, addBuy, persistSet, mocs = [], upsertMo
           <input inputmode="decimal" placeholder="—" value=${rec.rrp || ""}
             onChange=${e => change(r => { const v = parseFloat(e.target.value); r.rrp = isNaN(v) || v <= 0 ? 0 : v; return r; })} />
         </div>
-      </div>`}
+      </div>
       ${photos.length > 1 && html`<div style="display:flex;gap:8px;overflow-x:auto;margin-top:12px">
         ${photos.map((p, i) => html`<img key=${p.kind} src=${p.src}
           style=${`width:56px;height:56px;object-fit:contain;background:#fff;border-radius:8px;flex-shrink:0;border:${i === defaultIdx ? "2px solid var(--yellow)" : "1px solid var(--line)"}`}
@@ -5397,6 +5554,14 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
     if (c) c.qty += 1; else rec.copies.push(newCopy(buyId));
     persistSet?.(rec);
   };
+  // price a lot up without leaving the buy: RRP typed on a linked-set row writes to that set
+  const setSetRrp = (setNum, raw) => {
+    const rec = structuredClone(load(`bt:set:${setNum}`, null));
+    if (!rec) return;
+    const v = parseFloat(raw);
+    rec.rrp = isNaN(v) || v <= 0 ? 0 : v;
+    persistSet?.(rec);
+  };
   const linkMerchToBuy = (merchId, buyId) => {
     const m = merch.find(x => x.id === merchId);
     if (m) upsertMerch?.({ ...m, buyIds: [...(m.buyIds || []), buyId] });
@@ -5484,7 +5649,8 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
   const addModal = showForm && html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setShowForm(false); }}>
     <div class="sheet">
       <${Header} title="New buy" onBack=${() => setShowForm(false)} />
-      <${BuyForm} categories=${cats} onCancel=${() => setShowForm(false)}
+      ${/* open on the segment you're standing in — Regular tab → Regular buy */ ""}
+      <${BuyForm} categories=${cats} initial=${{ kind: kindF === "nobuy" ? "bulk" : kindF }} onCancel=${() => setShowForm(false)}
         onAdd=${b => { addBuy(b); setShowForm(false); setOpenBuyId(b.id); }} />
     </div>
   </div></${Portal}>`;
@@ -5578,12 +5744,20 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
         ${(() => {
           const rs = sets.reduce((a, e) => a + (e.valueSet || 0), 0);
           const rp = sets.reduce((a, e) => a + (e.valuePartOut || 0), 0);
+          // RRP of the sets linked to THIS buy — for a bulk/loose lot that's the sticker value of
+          // what came out of it. (A regular receipt already derives its RRP line from its sets.)
+          const setsRrp = sets.reduce((a, e) => a + (e.rrp || 0), 0);
+          const paidNow = buyKind(openBuy) === "regular" ? 0 : (openBuy.price || 0);
           let pn = 0, pval = 0, tn = 0, tval = 0;
           for (const e of sets) {
             pn += e.foundQty || 0; pval += e.foundVal || 0;
             tn += e.fullQty || 0; tval += e.fullVal || 0;
           }
           return html`
+            ${(!isReg && setsRrp > 0) ? html`<div class="row" style="justify-content:space-between;margin-top:8px">
+              <span class="dim" style="font-size:13px">RRP for sets · ${sets.filter(e => (e.rrp || 0) > 0).length}/${sets.length}${paidNow > 0 && setsRrp > paidNow ? ` · saved ${Math.round((1 - paidNow / setsRrp) * 100)}%` : ""}</span>
+              <span class="mono" style="font-size:13px;font-weight:700;color:var(--blue)">${money(setsRrp)}</span>
+            </div>` : ""}
             ${(rs || rp) ? html`<div class="row" style="justify-content:space-between;margin-top:8px">
               <span class="dim" style="font-size:13px">Est. recovery</span>
               <span class="mono" style="font-size:13px;font-weight:700">
@@ -5667,18 +5841,27 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
         const cp = (e.copies || []).find(c => c.buyId === openBuy.id);
         const loc = cp ? [cp.storage, cp.builtLoc].filter(Boolean).join(" · ") : "";
         return html`
-        <div class="card row" style="cursor:pointer" onClick=${() => onOpenSet(e.setNum)}>
-          ${e.img ? html`<img class="setimg" src=${e.img} loading="lazy"/>` : html`<div class="setimg" style="background:var(--panel2)"></div>`}
-          <div style="flex:1;min-width:0">
-            <div class="row" style="gap:6px;min-width:0">
-              <span class="ellip" style="font-weight:700;min-width:0">${e.name}</span>
-              ${qtyHere(e) > 1 && html`<span class="badge" style="color:var(--purple);border:1px solid var(--purple);flex-shrink:0">×${qtyHere(e)}</span>`}
+        <div class="card">
+          <div class="row" style="cursor:pointer" onClick=${() => onOpenSet(e.setNum)}>
+            ${e.img ? html`<img class="setimg" src=${e.img} loading="lazy"/>` : html`<div class="setimg" style="background:var(--panel2)"></div>`}
+            <div style="flex:1;min-width:0">
+              <div class="row" style="gap:6px;min-width:0">
+                <span class="ellip" style="font-weight:700;min-width:0">${e.name}</span>
+                ${qtyHere(e) > 1 && html`<span class="badge" style="color:var(--purple);border:1px solid var(--purple);flex-shrink:0">×${qtyHere(e)}</span>`}
+              </div>
+              <div class="dim mono" style="font-size:12px">${e.setNum} · ${e.year}</div>
+              ${loc && html`<div class="dim ellip" style="font-size:11px">📍 ${loc}</div>`}
+              <span style=${`font-size:11px;font-weight:700;color:${triageOf(e.triage).color}`}>${triageOf(e.triage).label}</span>
             </div>
-            <div class="dim mono" style="font-size:12px">${e.setNum} · ${e.year}</div>
-            ${loc && html`<div class="dim ellip" style="font-size:11px">📍 ${loc}</div>`}
-            <span style=${`font-size:11px;font-weight:700;color:${triageOf(e.triage).color}`}>${triageOf(e.triage).label}</span>
+            <${Ring} pct=${e.pct} />
           </div>
-          <${Ring} pct=${e.pct} />
+          ${/* RRP straight from the buy — no need to open each set to price the lot up */ ""}
+          <div class="row" style="gap:8px;margin-top:8px" onClick=${ev => ev.stopPropagation()}>
+            <span class="dim" style="font-size:12px;flex:1">RRP${(e.rrp || 0) > 0 && (e.pricePaid || 0) > 0 && e.rrp > e.pricePaid ? ` · −${Math.round((1 - e.pricePaid / e.rrp) * 100)}%` : ""}</span>
+            <input inputmode="decimal" placeholder="—" value=${e.rrp || ""}
+              style="width:110px;flex-shrink:0;text-align:right;padding:8px 10px;font-size:14px"
+              onChange=${ev => setSetRrp(e.setNum, ev.target.value)} />
+          </div>
         </div>`; })}
       ${(() => {
         const merchHere = merch.filter(m => (m.buyIds || []).includes(openBuy.id));

@@ -9,6 +9,51 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.64.0 — 2026-07-25
+
+**Hunting a MOC part now matches the colour you actually need.**
+
+- The **Found N in sets** / **Found N in donor** links on a MOC parts-list row counted every colour of that mould as one number. They now count the pieces in **the colour that line wants**, with a dim **+N other** for the same part in other colours.
+- Tapping a link opens the source sheet **split into two sections**: **✓ &lt;colour&gt; — exact colour** first (green-edged rows, colour name highlighted, most pieces first), then **Other colours** grouped by colour name. Each section shows its own piece count, and the sheet header names the colour being hunted.
+- A line with **no exact match** says so — `No Green in your sets — only other colours below.` — then lists the alternatives, so pulling a substitute is still one tap (and the row's colour is spelled out before you do).
+- Matching prefers the **Rebrickable colour id** when the MOC line carries one (set via **Edit part**), falling back to the **colour name** — so BrickLink / Studio imports, which only carry a name, match too. A line with no colour set behaves exactly as before (one flat list).
+
+-----
+
+## v0.63.0 — 2026-07-25
+
+**Add buy follows the tab you're in, the date field works, and bulk buys total up their sets' RRP.**
+
+- **+ Add buy opens on the active segment.** The New buy sheet is seeded with the segment you're standing in — **Regular** tab → a Regular buy, **Loose** tab → Loose / PAB. It always opened as **Bulk** regardless of the tab before (No Buy still falls back to Bulk, since it isn't a buy kind you can create).
+- **Date purchased is properly selectable.** The app-wide `appearance:none` on inputs was stripping iOS's native date control, leaving what reads as an empty box; date fields now keep their native picker and a finger-sized target. The chosen date is also spelled out (`Jul 25, 2026`) beside **Today** / **Yesterday** chips that set it in one tap.
+- **RRP for sets** — a new line in the Bulk / Loose buy detail, between **Price paid** and the parts estimate: the summed RRP of every set linked to that buy, how many of them carry an RRP (`2/3`), and the **% saved** against what the lot cost. Regular receipts are unchanged — their RRP line is already derived from their linked sets.
+- **Enter set RRP from the buy.** Each linked-set row in the buy detail gets an inline **RRP** box (with `−N%` against that set's price paid when both are set) writing straight to the set — price a whole lot up without opening each set in turn.
+- A set's **Price paid / RRP** pair is now always shown on its detail screen. It used to appear only for New sets, sets with a price already, or sets linked to a receipt — so a used set out of a bulk lot had nowhere to record an RRP.
+
+-----
+
+## v0.62.0 — 2026-07-25
+
+**Duplicates say which buys they're in; Juniors sets keep their theme and any set can be rethemed by hand.**
+
+- **"Already tracked" now names the buys.** A queued number in ↻ Bulk that's already tracked shows `Already tracked in eBay Jan ×2 (this buy) · Garage lot ×1` — every buy holding a copy, its qty, and `(this buy)` against whichever buy(s) are linked on the Add page right now. So a duplicate no longer means backing out of the bulk add to go and find where it lives. The single-set **already tracked** card carries the same line above its ＋ Add another copy button.
+- **Bare-Juniors sets keep the Juniors theme.** v0.61.1 pushed them to *Other*; there is nothing under the bare Juniors root to promote them to, so they now stay **Juniors** and are marked `themeChecked` — the theme-update banner records that the resolver has done all it can rather than asking about them forever. Juniors *sub*-themes still merge into the mainline theme (Juniors > City → **City**).
+- **Manual theme override.** Set detail gains a 🎨 chip next to 🏷 tags: it opens a picker listing every theme already in the collection (with counts) plus a box to type a new one. A hand-set theme is flagged `themeManual` (shown as ✎), is skipped by the Juniors remap and the theme backfill, and never appears in the banner. **↺ Back to automatic** hands the set back to Rebrickable's theme tree — recomputed on the spot when the tree is cached.
+- Sets fetched from Rebrickable are now stamped `themeChecked` at fetch time, so a newly added bare-Juniors set never shows up in the banner in the first place.
+
+-----
+
+## v0.61.1 — 2026-07-25
+
+**Fix: the theme-update banner's Fetch button did nothing for some sets.**
+
+- A set whose Rebrickable theme is the **bare "Juniors" root** (nothing under it to promote) re-resolved to `"Juniors"` on every pass — so it stayed in the "needs a theme update" list and every tap of **Fetch** left it exactly where it was. It's now marked as checked once the resolver has been over it, so the banner clears. Sets under a Juniors *sub*-theme are unaffected (Juniors > City → **City**, Juniors > Disney Princess → **Disney**).
+- The same rule applies to the silent on-open remap, so these sets settle without a tap when the theme tree is cached.
+- **Fetch re-pulls the theme tree** (`fetchThemesMap(true)`) instead of reusing the cached copy — a stale or partial cached tree was the other reason sets stayed unresolved. If the refresh fails it falls back to the cached tree rather than erroring out.
+- **One bad set number no longer aborts the backfill**: the per-set lookup for records with no stored `themeId` is caught individually, the remaining sets still update, and the banner reports `N updated · M sets couldn't be fetched — tap Fetch to retry`.
+
+-----
+
 ## v0.61.0 — 2026-07-25
 
 **↻ Bulk add is queue-first** — enter every set number first, fetch + save them in one run.
