@@ -96,8 +96,16 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.64.0";
+const APP_VERSION = "0.65.0";
 const CHANGELOG = [
+  ["0.65.0", "2026-07-27", [
+    "MOC page redesigned from scratch — it now works like a set's page. Two connected lists: the ✎ PARTS LIST (the plan — its own editor page for adding, importing and qty-editing what the build needs) and the BUILD tracker (read-only rows derived from the plan, logged exactly like a set: − / + steps the qty you HAVE, tap the name to toggle full, green when done).",
+    "Every tracker row gets a ⇄ transfer button: transfer pieces IN from donor sets, unbuilt sets or Loose/PAB buys (exact colour first, other colours below, →1 / → all), and transfer OUT (⇠1 / ⇠ all sends them back where they came from). The old dedicated '+ Add parts' / '⇠ Return parts' pages and the bottom source-set listing are gone.",
+    "Loose / PAB buy parts are now a transfer source — pieces itemised on a Loose buy show as 'N in PAB' on a MOC row and can be pulled in (and returned) like set parts, with the buy remembered as the source.",
+    "The have-count of a line = manual count (− / +) + ♻️ transferred in + 🛒 bought on the linked want list. Transferred/bought pieces are the stepper's floor — send them back with ⇄ rather than −.",
+    "Transferred pieces the plan doesn't mention (e.g. from before the redesign, or after clearing the list) surface in a '♻️ Transferred — not in the parts list' section with one-tap ＋ add-to-plan and ⇠ all return.",
+    "Set-style extras on the MOC page: sticky batch bar (tick rows → Mark N as have / not have, 🛒 push shortfalls to a want list), 'Add missing to want list (N pcs)' button, status badges + completion ring in the header card, and the 'just changed → x/y' hint after every tap.",
+  ]],
   ["0.64.0", "2026-07-25", [
     "MOC parts hunt is now colour-aware. “Found N in sets / in donor” counts the pieces in the COLOUR that line of the MOC actually wants, with a dim “+N other” for the same mould in other colours — instead of one number lumping every colour together.",
     "Tapping it opens the sets split into two sections: ✓ <colour> — exact colour first (green-edged rows, most pieces first), then Other colours grouped by colour name. Each section shows its piece count, and a line with no exact match says so before listing the alternatives.",
@@ -1103,12 +1111,15 @@ const pdfKey = id => `bt:pdf:${id}`;
 const MOC_STATUS = [["planning", "Planning", "var(--blue)"], ["building", "Building", "var(--yellow)"], ["built", "Built", "var(--green)"], ["disassembled", "Disassembled", "var(--dim)"]];
 const mocStatus = s => MOC_STATUS.find(x => x[0] === s) || MOC_STATUS[0];
 const mocStats = m => {
-  let pcs = 0; const sets = new Set();
-  for (const a of (m.parts || [])) if (a.qty > 0) { pcs += a.qty; sets.add(a.setNum); }
-  return { pcs, sets: sets.size };
+  // a transferred piece comes from a tracked set (a.setNum) or a Loose/PAB buy (a.buyId, v0.65)
+  let pcs = 0; const sets = new Set(), pabs = new Set();
+  for (const a of (m.parts || [])) if (a.qty > 0) { pcs += a.qty; if (a.buyId) pabs.add(a.buyId); else if (a.setNum) sets.add(a.setNum); }
+  return { pcs, sets: sets.size, pabs: pabs.size, sources: sets.size + pabs.size };
 };
 const allocatedRow = (mocs, setNum, rowId) =>
   mocs.reduce((t, mo) => t + (mo.parts || []).reduce((s, a) => s + (a.setNum === setNum && a.partRowId === rowId ? a.qty : 0), 0), 0);
+const allocatedBuyRow = (mocs, buyId, rowId) =>
+  mocs.reduce((t, mo) => t + (mo.parts || []).reduce((s, a) => s + (a.buyId === buyId && a.partRowId === rowId ? a.qty : 0), 0), 0);
 async function brickognize(blob) {
   const fd = new FormData();
   fd.append("query_image", blob, "scan.jpg");
@@ -1623,7 +1634,7 @@ function App() {
   const allocBySet = useMemo(() => {
     const m = new Map();
     for (const mo of mocs) for (const a of (mo.parts || []))
-      if (a.qty > 0) m.set(a.setNum, (m.get(a.setNum) || 0) + a.qty);
+      if (a.qty > 0 && a.setNum) m.set(a.setNum, (m.get(a.setNum) || 0) + a.qty);
     return m;
   }, [mocs]);
   const [buys, setBuys] = useState(() => load("bt:buys", []).map(b => ({ kind: "bulk", category: "", ...b })));
@@ -1743,7 +1754,7 @@ function App() {
             tags=${tags} createTag=${createTag}
             onOpen=${n => { setSetOrigin(null); setOpenSetNum(n); }} onAdd=${() => setAdding(true)} />`}
         ${tab === "sets" && !openSetNum && !adding && openMocId && html`
-          <${MocDetail} key=${openMocId} moc=${mocs.find(m => m.id === openMocId)} mocs=${mocs} index=${index}
+          <${MocDetail} key=${openMocId} moc=${mocs.find(m => m.id === openMocId)} mocs=${mocs} index=${index} buys=${buys}
             upsertMoc=${upsertMoc} deleteMoc=${id => { deleteMoc(id); setOpenMocId(null); }}
             wtbLists=${wtbLists} pushMissingToWtb=${pushMissingToWtb}
             tags=${tags} createTag=${createTag}
@@ -2136,51 +2147,56 @@ function parseWantedList(text) {
   return out;
 }
 
-function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack }) {
-  const [mode, setMode] = useState(null); // null | "add" | "return"
+function MocDetail({ moc, mocs, index, buys = [], upsertMoc, deleteMoc, wtbLists = [], pushMissingToWtb, tags = [], createTag, onBack }) {
+  // REDESIGN (v0.65.0) — the MOC page now mirrors a set's page. Two connected lists:
+  //  1) the PLAN — an editable / importable parts list (own ✎ editor view) defining what the build needs;
+  //  2) the BUILD tracker — read-only rows derived from the plan, rendered exactly like a set's parts
+  //     list: − / + logs pieces you HAVE, ⇄ transfers pieces in from donor sets / unbuilt sets /
+  //     Loose-PAB buys (and back out). The old dedicated "+ Add parts / ⇠ Return parts" pages are gone.
+  const [view, setView] = useState(null); // null = build tracker | "plan" = parts-list editor
   const [tagPick, setTagPick] = useState(false);
   const [recatTick, setRecatTick] = useState(0); // re-render after a part recategorise
-  const [importSet, setImportSet] = useState(""); // set number to import an exact parts list from
-  const [importSetBusy, setImportSetBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
-  const [srcSet, setSrcSet] = useState("");
-  const [q, setQ] = useState("");
-  const [openGroups, setOpenGroups] = useState(() => new Set());
+  // set-style parts filter (shared by tracker + editor): text filter + hide-have + grouping
+  const [pq, setPq] = useState("");
+  const [hideHave, setHideHave] = useState(false);
+  const [partGroup, setPartGroupRaw] = useState(() => load("bt:mocpartgroup", "color")); // color | type
   // parts-list accordion open state persists per MOC (survives tab switches + back-navigation)
   const wantOpenKey = `bt:moc:open:${moc?.id || "x"}`;
   const [wantOpen, setWantOpen] = useState(() => new Set(load(wantOpenKey, [])));
   const saveWantOpen = n => { save(wantOpenKey, [...n]); return n; };
   const toggleWant = g => setWantOpen(prev => saveWantOpen((() => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; })()));
-  const [partGroup, setPartGroupRaw] = useState(() => load("bt:mocpartgroup", "color")); // color | type
   const setPartGroup = v => { setPartGroupRaw(v); save("bt:mocpartgroup", v); setWantOpen(saveWantOpen(new Set())); };
-  // set-style parts filter (mirrors the set & WTB parts lists): text filter + hide-have toggle
-  const [pq, setPq] = useState("");
-  const [hideHave, setHideHave] = useState(false);
-  const [partsOpen, setPartsOpen] = useState(true); // Parts List accordion block
-  const [addOpen, setAddOpen] = useState(false);    // collapsible add/import sub-block (hidden until tapped)
-  const [sel, setSel] = useState(() => new Set());  // parts ticked to push onto a want list (by wanted index)
-  const [importOpen, setImportOpen] = useState(false); // NF2
-  const [importText, setImportText] = useState("");
-  const [wantPart, setWantPart] = useState("");
-  const [wantColor, setWantColor] = useState("");
-  const [wantQty, setWantQty] = useState("1");
-  const pdfInput = useRef(null);
-  const [importMsg, setImportMsg] = useState("");
+  const [selIds, setSelIds] = useState(() => new Set()); // ticked tracker rows (by wanted index)
+  const [lastAct, setLastAct] = useState(null); // {i, applied, have, need} — "just changed" hint under a row
+  const [transferFor, setTransferFor] = useState(null); // wanted index with the ⇄ transfer sheet open
+  const [viewPart, setViewPart] = useState(null); // line shown full-size (tap thumbnail)
+  const [editWanted, setEditWanted] = useState(null); // {i, w} — colour/qty edit sheet for a plan line
+  const [imgBusy, setImgBusy] = useState(false);
   const [wtbMsg, setWtbMsg] = useState("");
-  const [viewPart, setViewPart] = useState(null); // wanted line shown full-size (tap thumbnail)
-  const [editWanted, setEditWanted] = useState(null); // {i, w} — colour/qty edit sheet for a wanted line
-  const [imgBusy, setImgBusy] = useState(false);   // resolving part images from Rebrickable
-  const [searchQ, setSearchQ] = useState("");      // add-parts: search Rebrickable by name
+  // plan editor: add / import tools
+  const [importOpen, setImportOpen] = useState(false); // paste XML/CSV sheet
+  const [importText, setImportText] = useState("");
+  const [importMsg, setImportMsg] = useState("");
+  const [importSet, setImportSet] = useState(""); // set number to import an exact parts list from
+  const [importSetBusy, setImportSetBusy] = useState(false);
+  const [wantPart, setWantPart] = useState("");
+  const [wantQty, setWantQty] = useState("1");
+  const [searchQ, setSearchQ] = useState("");
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchRes, setSearchRes] = useState(null);
   const [searchMsg, setSearchMsg] = useState("");
-  const [sourceFor, setSourceFor] = useState(null); // {pn, kind:"donor"|"avail"} — list of sets holding a part
-  // a WTB list linked to this MOC contributes its "got" (bought) parts toward the plan's have-count
+  const pdfInput = useRef(null);
+  // opening the page (or switching editor ↔ tracker) always starts at the top, like a set
+  useEffect(() => { document.querySelector(".content")?.scrollTo({ top: 0 }); }, [view]);
+
+  const wanted = moc?.wanted || [];
+  // a WTB list linked to this MOC contributes its "got" (bought) parts toward the have-count
   const linkedWtb = (wtbLists || []).find(l => l.linkType === "moc" && l.linkId === moc?.id);
-  // Scan every tracked set's full record ONCE for: (a) a part image we can reuse here (same source the
-  // sets list uses — Rebrickable part_img_url), and (b) free pieces sitting in DONOR sets so the
-  // have-count reflects what you can pull. Keyed by base part number so a BrickLink import matches.
+
+  // Scan every tracked set's full record ONCE for: (a) a part image to reuse, and (b) free pieces in
+  // donor / unbuilt sets available to transfer in. Keyed by base part number so BL imports match.
   const setData = useMemo(() => {
     const img = new Map(), sources = new Map(); // partKey → [{meta,donor,built,free,part}]
     for (const e of (index || [])) {
@@ -2196,66 +2212,161 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     }
     return { img, sources };
   }, [index, mocs]);
+  // free pieces sitting in Loose / PAB buys — the third transfer-in source
+  const buyData = useMemo(() => {
+    const m = new Map(); // partKey → [{buy, part, free, pab:true}]
+    for (const b of (buys || [])) {
+      if (buyKind(b) !== "loose") continue;
+      for (const p of (b.parts || [])) {
+        const free = Math.max(0, (p.qty || 0) - allocatedBuyRow(mocs, b.id, p.id));
+        if (free > 0) { const k = partKey(p.partNum); if (!m.has(k)) m.set(k, []); m.get(k).push({ buy: b, part: p, free, pab: true }); }
+      }
+    }
+    return m;
+  }, [buys, mocs]);
   const imgIndexFor = pn => setData.img.get(partKey(pn)) || null;
-  const sourcesFor = pn => setData.sources.get(partKey(pn)) || [];
-  // Colour-aware hunting: a MOC line wants a SPECIFIC colour, so a hit in that exact colour is worth
-  // more than the same mould in another colour. Match on Rebrickable colour id when both sides have
-  // one, else on colour name; a line with no colour set has no "exact" to match.
-  const wantedColorOf = w => (w.colorName || "").trim();
-  const sameColorAs = (w, part) => {
-    if (w.rbColorId != null && w.rbColorId !== "" && part.colorID != null) return String(w.rbColorId) === String(part.colorID);
-    const a = wantedColorOf(w).toLowerCase(), b = (part.colorName || "").trim().toLowerCase();
-    return !!a && a === b;
+  const setSourcesFor = pn => setData.sources.get(partKey(pn)) || [];
+  const buySourcesFor = pn => buyData.get(partKey(pn)) || [];
+
+  // Colour matching: prefer the Rebrickable colour id when the line has one, fall back to the name.
+  const lineColor = w => (w.colorName || "").trim();
+  const lineHasColor = w => !!lineColor(w) || (w.rbColorId != null && w.rbColorId !== "");
+  const colorEq = (w, colorID, colorName) => {
+    if (w.rbColorId != null && w.rbColorId !== "" && colorID != null) return String(w.rbColorId) === String(colorID);
+    const a = lineColor(w).toLowerCase(); return !!a && a === (colorName || "").trim().toLowerCase();
   };
-  const freePcs = l => l.reduce((a, s) => a + s.free, 0);
-  // sets holding this part, split into the MOC's colour vs every other colour of the same mould
-  const splitSources = (w, kind) => {
-    const all = sourcesFor(w.partNum).filter(s => kind === "donor" ? s.donor : (!s.donor && !s.built));
-    const exact = [], other = [];
-    for (const s of all) (sameColorAs(w, s.part) ? exact : other).push(s);
-    const byFree = (a, b) => b.free - a.free;
-    exact.sort(byFree);
-    other.sort((a, b) => (a.part.colorName || "").localeCompare(b.part.colorName || "") || byFree(a, b));
-    return { exact, other, hasColor: !!wantedColorOf(w) || w.rbColorId != null };
-  };
-  // pieces free in DONOR sets, and pieces free in other (non-donor) sets NOT marked built/assembled.
-  // These are only AVAILABLE — they don't count toward have/need until you transfer them in (→).
-  const donorFor = pn => sourcesFor(pn).reduce((a, s) => a + (s.donor ? s.free : 0), 0);
-  const inSetsFor = pn => sourcesFor(pn).reduce((a, s) => a + (!s.donor && !s.built ? s.free : 0), 0);
-  // pieces actually transferred (allocated) from sets into THIS moc. Base-match (3023 import ↔ 3023b).
-  const allocFor = pn => (moc?.parts || []).reduce((a, x) => a + (String(x.partNumber) === String(pn) || partKey(x.partNumber) === partKey(pn) ? x.qty : 0), 0);
-  // have-count = ONLY what's recorded: parts transferred into this MOC + bought (got) parts from the
-  // linked want list. Donor / "in sets" availability is NOT counted until you actually transfer it.
-  const haveFor = pn => {
-    let n = allocFor(pn);
-    if (linkedWtb) n += (linkedWtb.parts || []).reduce((a, w) => a + (w.got && (String(w.partNum) === String(pn) || partKey(w.partNum) === partKey(pn)) ? (w.qty || 0) : 0), 0);
-    return n;
-  };
-  const wanted = moc?.wanted || [];
+  const samePart = (a, b) => String(a) === String(b) || partKey(a) === partKey(b);
+
+  // Every transferred piece (moc.parts) is assigned to ONE plan line: exact-colour line first, then a
+  // colourless line, then the first line of that mould — so a deliberately-pulled substitute colour
+  // still counts toward the line it was pulled for. Unmatched pieces surface as "not in the plan".
+  const allocAssign = useMemo(() => {
+    const per = new Map(); const orphans = [];
+    for (const a of (moc?.parts || [])) {
+      if (a.qty <= 0) continue;
+      const cands = wanted.map((w, i) => ({ w, i })).filter(({ w }) => samePart(a.partNumber, w.partNum));
+      if (!cands.length) { orphans.push(a); continue; }
+      const aCol = a.colorID != null ? a.colorID : (a.rbColorId != null ? a.rbColorId : null);
+      const pick = cands.find(({ w }) => lineHasColor(w) && colorEq(w, aCol, a.colorName))
+        || cands.find(({ w }) => !lineHasColor(w)) || cands[0];
+      if (!per.has(pick.i)) per.set(pick.i, []);
+      per.get(pick.i).push(a);
+    }
+    return { per, orphans };
+  }, [moc?.parts, moc?.wanted]);
+  // bought (got) parts on the linked want list, assigned to plan lines the same way
+  const gotAssign = useMemo(() => {
+    const per = new Map();
+    for (const p of (linkedWtb?.parts || [])) {
+      if (!p.got || !((p.qty || 0) > 0)) continue;
+      const cands = wanted.map((w, i) => ({ w, i })).filter(({ w }) => samePart(p.partNum, w.partNum));
+      if (!cands.length) continue;
+      const pick = cands.find(({ w }) => lineHasColor(w) && colorEq(w, p.rbColorId, p.colorName))
+        || cands.find(({ w }) => !lineHasColor(w)) || cands[0];
+      per.set(pick.i, (per.get(pick.i) || 0) + (p.qty || 0));
+    }
+    return per;
+  }, [linkedWtb, moc?.wanted]);
+  const transAt = i => (allocAssign.per.get(i) || []).reduce((a, x) => a + x.qty, 0);
+  const gotAt = i => gotAssign.get(i) || 0;
+  const haveAt = i => (wanted[i]?.qtyHave || 0) + transAt(i) + gotAt(i);
   const wantTotal = wanted.reduce((a, w) => a + (w.qty || 0), 0);
-  const wantHave = wanted.reduce((a, w) => a + Math.min(haveFor(w.partNum), w.qty || 0), 0);
+  const wantHave = wanted.reduce((a, w, i) => a + Math.min(haveAt(i), w.qty || 0), 0);
   const wantPct = wantTotal ? Math.round((wantHave / wantTotal) * 100) : 0;
-  // BUG FIX (part picture): fall back to a real allocated part's image (Rebrickable url) when the
-  // imported/hand-added line has no BrickLink colour id to build an image url from.
-  const allocImg = pn => (moc?.parts || []).find(a => a.img && (String(a.partNumber) === String(pn) || partKey(a.partNumber) === partKey(pn)))?.img || null;
+  const allocImg = pn => (moc?.parts || []).find(a => a.img && samePart(a.partNumber, pn))?.img || null;
   const partImgFor = w => w.img || blPartImg(w.partNum, w.blColorId) || allocImg(w.partNum) || imgIndexFor(w.partNum);
-  // BUG FIX (qty stepper): edit a parts-list line's needed quantity in place (min 1; ✕ to remove).
-  const setWantQtyAt = (i, q) => upsertMoc({ ...moc, wanted: wanted.map((w, j) => j === i ? { ...w, qty: Math.max(1, q) } : w) });
-  const toggleSel = i => setSel(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; });
-  const selectAllMissing = () => setSel(new Set(wanted.map((w, i) => i).filter(i => haveFor(wanted[i].partNum) < (wanted[i].qty || 0))));
-  // push the ticked parts-list lines onto a (MOC-linked) want list — shortfall when partly had, else full qty
-  const addSelToWant = () => {
-    const picks = [...sel].map(i => wanted[i]).filter(Boolean);
-    if (!picks.length) return;
-    const parts = picks.map(w => { const short = Math.max(0, (w.qty || 0) - haveFor(w.partNum));
-      return { partNum: w.partNum, name: w.name, colorName: w.colorName, blColorId: w.blColorId, rbColorId: w.rbColorId, img: w.img, qty: short > 0 ? short : (w.qty || 1) }; });
-    pushMissingToWtb?.({ linkType: "moc", linkId: moc.id, name: moc.name, parts });
-    setSel(new Set());
-    setWtbMsg(`Added ${picks.length} part${picks.length === 1 ? "" : "s"} to a want list.`);
-    setTimeout(() => setWtbMsg(""), 3500);
+
+  // sources for a line, split by kind and into the line's colour vs other colours of the same mould
+  const freeOf = l => l.reduce((a, s) => a + s.free, 0);
+  const rowSources = w => {
+    const mk = () => ({ exact: [], other: [] });
+    const r = { donor: mk(), sets: mk(), pab: mk(), hasColor: lineHasColor(w) };
+    for (const s of setSourcesFor(w.partNum)) {
+      const bucket = s.donor ? r.donor : (!s.built ? r.sets : null);
+      if (!bucket) continue;
+      (!r.hasColor || colorEq(w, s.part.colorID, s.part.colorName) ? bucket.exact : bucket.other).push(s);
+    }
+    for (const s of buySourcesFor(w.partNum))
+      (!r.hasColor || colorEq(w, s.part.rbColorId, s.part.colorName) ? r.pab.exact : r.pab.other).push(s);
+    const byFree = (a, b) => b.free - a.free;
+    const byCol = (a, b) => ((a.part.colorName || "").localeCompare(b.part.colorName || "")) || byFree(a, b);
+    for (const k of ["donor", "sets", "pab"]) { r[k].exact.sort(byFree); r[k].other.sort(byCol); }
+    return r;
   };
-  // Auto-fill images from the LOCAL CATALOG only — instant, no network, no spinner (same as the WTB
-  // list). Covers every part you already own. The 🖼 button below does the NETWORK fetch for the rest.
+
+  // ---------- mutations ----------
+  // plan edits (editor view)
+  const setWantQtyAt = (i, q) => upsertMoc({ ...moc, wanted: wanted.map((w, j) => j === i ? { ...w, qty: Math.max(1, q) } : w) });
+  const removeWanted = i => { setSelIds(new Set()); setLastAct(null); upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) }); };
+  // have stepper (tracker view) — adjusts the MANUAL have only; transferred / bought pieces are the
+  // floor (send them back with ⇄ transfer out), the plan qty is the ceiling — same feel as a set.
+  const bump = (i, d) => {
+    const w = wanted[i]; if (!w) return;
+    const fixed = transAt(i) + gotAt(i);
+    const before = w.qtyHave || 0;
+    const room = Math.max(0, (w.qty || 0) - fixed);
+    const next = Math.max(0, Math.min(room, before + d));
+    if (next === before) return;
+    upsertMoc({ ...moc, wanted: wanted.map((x, j) => j === i ? { ...x, qtyHave: next } : x) });
+    setLastAct({ i, applied: next - before, have: fixed + next, need: w.qty || 0, ts: Date.now() });
+  };
+  // tap the row text = toggle full / back to the transferred floor (mirrors a set's part row)
+  const fillToggle = i => {
+    const w = wanted[i]; if (!w) return;
+    const fixed = transAt(i) + gotAt(i);
+    const room = Math.max(0, (w.qty || 0) - fixed);
+    bump(i, haveAt(i) >= (w.qty || 0) ? -(w.qtyHave || 0) : room - (w.qtyHave || 0));
+  };
+  // transfer IN from a tracked set (unchanged provenance model: moc.parts remembers the source row)
+  const withAlloc = (parts, setRec, p, delta) => {
+    const next = [...parts];
+    const i = next.findIndex(a => a.setNum === setRec.setNum && a.partRowId === p.id);
+    if (i >= 0) {
+      const nq = next[i].qty + delta;
+      if (nq <= 0) next.splice(i, 1);
+      else next[i] = { ...next[i], qty: nq };
+    } else if (delta > 0) {
+      next.push({ id: `${Date.now()}${Math.random().toString(36).slice(2, 6)}`, setNum: setRec.setNum, setName: setRec.name,
+        partRowId: p.id, partNumber: p.partNumber, partName: p.partName, colorID: p.colorID, colorName: p.colorName,
+        img: p.img, qty: delta });
+    }
+    return next;
+  };
+  const take = (setRec, p, delta) =>
+    upsertMoc({ ...moc, parts: withAlloc(moc.parts || [], setRec, p, delta),
+      status: moc.status === "disassembled" && delta > 0 ? "building" : moc.status });
+  // transfer IN from a Loose / PAB buy's itemised parts
+  const takeBuy = (buy, p, delta) => {
+    const next = [...(moc.parts || [])];
+    const i = next.findIndex(a => a.buyId === buy.id && a.partRowId === p.id);
+    if (i >= 0) {
+      const nq = next[i].qty + delta;
+      if (nq <= 0) next.splice(i, 1);
+      else next[i] = { ...next[i], qty: nq };
+    } else if (delta > 0) {
+      next.push({ id: `${Date.now()}${Math.random().toString(36).slice(2, 6)}`, buyId: buy.id, buyLabel: buy.label || "Loose / PAB",
+        partRowId: p.id, partNumber: p.partNum, partName: p.name || "", rbColorId: p.rbColorId != null ? p.rbColorId : null,
+        colorName: p.colorName || "", img: p.img || null, qty: delta });
+    }
+    upsertMoc({ ...moc, parts: next, status: moc.status === "disassembled" && delta > 0 ? "building" : moc.status });
+  };
+  // transfer OUT — pieces go home to their source set / buy (the allocation is simply released)
+  const giveBack = (a, n) => {
+    const next = [...(moc.parts || [])];
+    const i = next.findIndex(x => x.id === a.id);
+    if (i < 0) return;
+    const nq = Math.max(0, next[i].qty - n);
+    if (nq === 0) next.splice(i, 1); else next[i] = { ...next[i], qty: nq };
+    const emptied = next.length === 0 && !wanted.some(w => (w.qtyHave || 0) > 0);
+    upsertMoc({ ...moc, parts: next, status: emptied ? "disassembled" : moc.status });
+  };
+  // an orphaned transfer (piece not in the plan) can be adopted into the plan in one tap
+  const adoptOrphan = a => upsertMoc({ ...moc, wanted: [...wanted, { partNum: a.partNumber, name: a.partName || "",
+    colorName: a.colorName || "", rbColorId: a.colorID != null ? a.colorID : (a.rbColorId != null ? a.rbColorId : null),
+    img: a.img || null, qty: a.qty }] });
+
+  // Auto-fill images from the LOCAL CATALOG only — instant, no network (the 🖼 button in the editor
+  // does the network fetch for parts the catalog can't cover).
   const fillFromCatalog = () => {
     let dirty = false;
     const next = wanted.map(w => {
@@ -2269,15 +2380,13 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     if (dirty) upsertMoc({ ...moc, wanted: next });
   };
   useEffect(() => { fillFromCatalog(); }, [moc.id, wanted]);
-  // Manual 🖼 button — NETWORK fetch for parts the catalog can't cover. Parallel workers (fast +
-  // bounded by rbFetch's 15s timeout), one save at the end, try/finally so the spinner always clears.
   const fetchPartImages = async () => {
-    if (!getKey().trim()) { setWtbMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setWtbMsg(""), 3500); return; }
+    if (!getKey().trim()) { setImportMsg("Add your Rebrickable key in Settings first."); setTimeout(() => setImportMsg(""), 3500); return; }
     const targets = wanted.map((w, i) => ({ w, i })).filter(({ w }) => !w.img && w.partNum);
-    if (!targets.length) { setWtbMsg("No parts need images."); setTimeout(() => setWtbMsg(""), 3500); return; }
+    if (!targets.length) { setImportMsg("No parts need images."); setTimeout(() => setImportMsg(""), 3500); return; }
     setImgBusy(true);
     try {
-      const patches = new Map(); let idx = 0; // wanted index → patch
+      const patches = new Map(); let idx = 0;
       const worker = async () => {
         while (idx < targets.length) {
           const { w, i } = targets[idx++]; let patch = null;
@@ -2294,8 +2403,8 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
       const next = wanted.map((w, i) => patches.has(i) ? { ...w, ...patches.get(i) } : w);
       const changed = [...patches.values()].filter(x => x.img).length;
       upsertMoc({ ...moc, wanted: next });
-      setWtbMsg(changed ? `Fetched ${changed} part image${changed === 1 ? "" : "s"}.` : "No new images found (parts may not be on Rebrickable).");
-      setTimeout(() => setWtbMsg(""), 3500);
+      setImportMsg(changed ? `Fetched ${changed} part image${changed === 1 ? "" : "s"}.` : "No new images found (parts may not be on Rebrickable).");
+      setTimeout(() => setImportMsg(""), 3500);
     } finally { setImgBusy(false); }
   };
   // search Rebrickable parts by NAME or number so a part can be added without knowing its number
@@ -2325,9 +2434,7 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     setImportMsg(`Imported ${lots} part${lots === 1 ? "" : "s"} (${pcs} pcs).`);
     setTimeout(() => setImportMsg(""), 4000);
   };
-  // Request 2: fetch a real set's EXACT inventory from Rebrickable and add it as this MOC's parts
-  // list — for building a set from your own bulk instead of buying it boxed. Merges main + minifig
-  // parts (skips spares / separators / sticker sheets) and collapses duplicates by part+colour.
+  // fetch a real set's EXACT inventory from Rebrickable and append it to the plan
   const importSetParts = async () => {
     const sn = normSetNum(importSet);
     if (!sn) return;
@@ -2353,63 +2460,11 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
     } catch (e) { setImportMsg(e.message || "Import failed."); }
     setImportSetBusy(false);
   };
-  const toggleGroup = id => setOpenGroups(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  // outstanding allocations grouped by source set
-  const groups = useMemo(() => {
-    const m = new Map();
-    for (const a of (moc?.parts || [])) {
-      if (a.qty <= 0) continue;
-      if (!m.has(a.setNum)) m.set(a.setNum, { setName: a.setName, list: [] });
-      m.get(a.setNum).list.push(a);
-    }
-    return [...m.entries()];
-  }, [moc?.parts]);
-
-  // ---- add-parts mode ----
-  const srcRec = mode === "add" && srcSet ? load(`bt:set:${srcSet}`, null) : null;
-  const srcRows = useMemo(() => {
-    if (!srcRec) return [];
-    const ql = q.trim().toLowerCase();
-    return srcRec.parts.filter(p => p.qtyFound > 0 &&
-      (!ql || p.partName?.toLowerCase().includes(ql) || p.partNumber?.toLowerCase().includes(ql) || p.colorName?.toLowerCase().includes(ql)));
-  }, [srcRec, q, mocs]);
-
-  if (!moc) return html`<div class="card">MOC not found. <button class="ghost" onClick=${onBack}>Back</button></div>`;
-  const stats = mocStats(moc);
-
-  // ---- allocation mutations ----
-  const withAlloc = (parts, setRec, p, delta) => {
-    const next = [...parts];
-    const i = next.findIndex(a => a.setNum === setRec.setNum && a.partRowId === p.id);
-    if (i >= 0) {
-      const nq = next[i].qty + delta;
-      if (nq <= 0) next.splice(i, 1);
-      else next[i] = { ...next[i], qty: nq };
-    } else if (delta > 0) {
-      next.push({ id: `${Date.now()}${Math.random().toString(36).slice(2, 6)}`, setNum: setRec.setNum, setName: setRec.name,
-        partRowId: p.id, partNumber: p.partNumber, partName: p.partName, colorID: p.colorID, colorName: p.colorName,
-        img: p.img, qty: delta });
-    }
-    return next;
-  };
-  const take = (setRec, p, delta) =>
-    upsertMoc({ ...moc, parts: withAlloc(moc.parts || [], setRec, p, delta),
-      status: moc.status === "disassembled" && delta > 0 ? "building" : moc.status });
-  const giveBack = (a, n) => {
-    const next = [...(moc.parts || [])];
-    const i = next.findIndex(x => x.id === a.id);
-    if (i < 0) return;
-    const nq = Math.max(0, next[i].qty - n);
-    if (nq === 0) next.splice(i, 1); else next[i] = { ...next[i], qty: nq };
-    const emptied = next.every(x => x.qty <= 0) || next.length === 0;
-    upsertMoc({ ...moc, parts: next, status: emptied ? "disassembled" : moc.status });
-  };
-
-  // ---- PDFs ----
+  // ---------- PDFs ----------
   function attachPdf(file) {
     const id = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
-    save(pdfKey(id), file); // Blob straight into IndexedDB
+    save(pdfKey(id), file);
     upsertMoc({ ...moc, pdfs: [...(moc.pdfs || []), { id, name: file.name || "instructions.pdf", size: file.size || 0 }] });
   }
   function openPdf(f) {
@@ -2426,182 +2481,119 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
   }
   const mb = n => n > 0 ? ` · ${(n / 1024 / 1024).toFixed(1)} MB` : "";
 
-  const st = mocStatus(moc.status);
+  if (!moc) return html`<div class="card">MOC not found. <button class="ghost" onClick=${onBack}>Back</button></div>`;
+  const stats = mocStats(moc);
 
-  if (mode === "add") return html`<div class="navin" key="moc-add">
-    <${Header} title="Add parts" sub=${moc.name} onBack=${() => { setMode(null); setQ(""); }} />
-    <div class="card">
-      <${Label}>Take parts from…</${Label}>
-      <select value=${srcSet} onChange=${e => setSrcSet(e.target.value)}>
-        <option value="">— pick a tracked set —</option>
-        ${index.map(e => html`<option value=${e.setNum}>${e.name} · ${e.setNum}</option>`)}
-      </select>
-      ${srcRec && html`<input style="margin-top:8px" placeholder="Filter parts (name / number / colour)" value=${q} onInput=${e => setQ(e.target.value)} />`}
-    </div>
-    ${srcRec && srcRows.length > 0 && html`<div class="row" style="gap:8px;margin-bottom:10px">
-      <button class="btn green" style="flex:1" onClick=${() => {
-        let parts = moc.parts || [];
-        for (const p of srcRows) { const free = p.qtyFound - allocatedRow(mocs, srcRec.setNum, p.id); if (free > 0) parts = withAlloc(parts, srcRec, p, free); }
-        upsertMoc({ ...moc, parts, status: moc.status === "disassembled" ? "building" : moc.status });
-      }}>✓ Take all free</button>
-      <button class="ghost" style="flex:1" disabled=${!(moc.parts || []).some(a => a.setNum === srcRec.setNum)}
-        onClick=${() => { if (confirm("Return everything taken from this set?")) upsertMoc({ ...moc, parts: (moc.parts || []).filter(a => a.setNum !== srcRec.setNum) }); }}>Clear taken</button>
-    </div>`}
-    ${srcRec && srcRows.length === 0 && html`<div class="card dim" style="text-align:center">No found parts${q ? " matching the filter" : ""} in this set.</div>`}
-    ${srcRec && srcRows.map(p => {
-      const totalAlloc = allocatedRow(mocs, srcRec.setNum, p.id);
-      const mine = (moc.parts || []).find(a => a.setNum === srcRec.setNum && a.partRowId === p.id)?.qty || 0;
-      const free = p.qtyFound - totalAlloc;
-      return html`<div key=${p.id} class="row" style="background:var(--panel);border:1px solid ${mine > 0 ? "var(--purple)" : "var(--line)"};border-radius:12px;padding:8px 10px;margin-bottom:6px">
-        ${p.img ? html`<img class="partimg" src=${p.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
-        <div style="flex:1;min-width:0">
-          <div class="clamp2" style="font-size:13px;line-height:1.25">${p.partName}</div>
-          <div class="dim mono" style="font-size:11px">${p.colorName} · ${p.qtyFound} found${totalAlloc - mine > 0 ? ` · ${totalAlloc - mine} in other MOCs` : ""}</div>
+  // ---------- shared grouping (colour / part-type buckets, like a set) ----------
+  const ql = pq.trim().toLowerCase();
+  const matchQ = w => !ql || (w.name || "").toLowerCase().includes(ql) || (w.partNum || "").toLowerCase().includes(ql) || (w.colorName || "").toLowerCase().includes(ql);
+  const groupedOf = list => { // list of {w,i} → sorted [group, items] entries
+    const map = new Map();
+    for (const it of list) { const g = partGroup === "type" ? partType(it.w.name, it.w.partNum) : colorGroup(it.w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push(it); }
+    const rank = partGroup === "type" ? typeRank : groupRank;
+    return [...map.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
+  };
+  const filterChips = entries => {
+    const allOpen = entries.length > 0 && entries.every(([g]) => wantOpen.has(g));
+    return html`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
+      ${view === null && html`<${Chip} label="Hide have" color="var(--green)" active=${hideHave} onClick=${() => setHideHave(v => !v)} />`}
+      <${Chip} label=${partGroup === "type" ? "Group: Type" : "Group: Colour"} color="var(--blue)" active onClick=${() => setPartGroup(partGroup === "type" ? "color" : "type")} />
+      <${Chip} label=${allOpen ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false}
+        onClick=${() => setWantOpen(saveWantOpen(allOpen ? new Set() : new Set(entries.map(([g]) => g))))} />
+      <${Chip} label="↺ Reset" color="var(--red)" active=${false} onClick=${() => { setPq(""); setHideHave(false); }} />
+    </div>`;
+  };
+
+  // ---------- shared sheets (rendered from both views) ----------
+  const sheets = html`
+    ${importOpen && html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setImportOpen(false); }}>
+      <div class="sheet">
+        <${Header} title="Import parts list" onBack=${() => setImportOpen(false)} />
+        <div class="dim" style="font-size:12px;margin-bottom:8px">Paste a BrickLink Studio export (XML) or a Rebrickable parts CSV/TSV. Part numbers + quantities are read; colours kept as-is. Imports append to the parts list.</div>
+        <textarea style="height:150px;font-family:ui-monospace,monospace;font-size:12px" placeholder="Paste XML or CSV here…" value=${importText} onInput=${e => setImportText(e.target.value)}></textarea>
+        <div style="height:10px"></div>
+        <div class="row" style="gap:8px">
+          <button class="btn" style="flex:1" disabled=${!importText.trim()} onClick=${doImport}>Import</button>
+          <button class="ghost" style="flex:1" onClick=${() => { setImportText(""); setImportOpen(false); }}>Cancel</button>
         </div>
-        <button class="step" disabled=${mine === 0} onClick=${() => take(srcRec, p, -1)}>−</button>
-        <div class="mono" style=${`font-size:14px;font-weight:700;min-width:34px;text-align:center;color:${mine > 0 ? "var(--purple)" : "var(--dim)"}`}>${mine}</div>
-        <button class="step plus" disabled=${free <= 0} onClick=${() => take(srcRec, p, +1)}>+</button>
+      </div>
+    </div></${Portal}>`}
+    ${editing && html`<${MocSheet} initial=${moc} onClose=${() => setEditing(false)}
+      onSave=${m => { upsertMoc(m); setEditing(false); }} />`}
+    ${tagPick && html`<${TagPickerSheet} title="MOC tags" sub=${moc.name}
+      tags=${tags} selected=${moc.tags || []} createTag=${createTag}
+      onChange=${ids => upsertMoc({ ...moc, tags: ids })} onClose=${() => setTagPick(false)} />`}
+    ${viewPart && html`<${PartImgViewer} p=${viewPart} tags=${tags} createTag=${createTag} onRecat=${() => setRecatTick(t => t + 1)} onClose=${() => setViewPart(null)} />`}
+    ${editWanted && html`<${PartColorQtySheet} part=${editWanted.w} title="Edit part"
+      onClose=${() => setEditWanted(null)}
+      onSave=${patch => { const { i } = editWanted; upsertMoc({ ...moc, wanted: wanted.map((w, j) => j === i ? { ...w, ...patch } : w) }); setEditWanted(null); }} />`}
+    ${transferFor != null && (() => {
+      const i = transferFor, w = wanted[i];
+      if (!w) return null;
+      const src = rowSources(w);
+      const mine = allocAssign.per.get(i) || [];
+      const colour = lineColor(w);
+      const inRow = (s, off) => html`<div key=${(s.pab ? "b" + s.buy.id : s.meta.setNum) + "|" + s.part.id} class="row" style=${`background:var(--panel);border:1px solid ${off ? "var(--line)" : "var(--green)"};border-radius:12px;padding:8px 10px;margin-bottom:6px`}>
+        <${Thumb} src=${s.part.img} size=${40} />
+        <div style="flex:1;min-width:0">
+          <div class="clamp2" style="font-size:13px">${s.pab ? (s.buy.label || "Loose / PAB") : s.meta.name}</div>
+          <div class="dim mono" style="font-size:11px">${s.pab ? "🛍 Loose / PAB" : s.meta.setNum}${s.donor ? " · ♻️ donor" : ""} · <span style=${off ? "" : "color:var(--green);font-weight:700"}>${s.part.colorName || "—"}</span> · ${s.free} free</div>
+        </div>
+        <button class="step" style="width:40px;color:var(--purple);border-color:var(--purple)" disabled=${s.free <= 0}
+          onClick=${() => s.pab ? takeBuy(s.buy, s.part, 1) : take(s.meta, s.part, 1)}>→1</button>
+        <button class="step" style="width:50px;font-size:12px;color:var(--purple);border-color:var(--purple)" disabled=${s.free <= 0}
+          onClick=${() => s.pab ? takeBuy(s.buy, s.part, s.free) : take(s.meta, s.part, s.free)}>→ all</button>
       </div>`;
-    })}
-    <button class="btn" onClick=${() => { setMode(null); setQ(""); }}>Done</button>
-  </div>`;
-
-  if (mode === "return") return html`<div class="navin" key="moc-return">
-    <${Header} title="Return parts" sub=${`${moc.name} · ${stats.pcs} pcs still out`} onBack=${() => setMode(null)} />
-    ${groups.length === 0 && html`<div class="card" style="color:var(--green);font-weight:600;font-size:14px">✓ Everything is home — MOC marked Disassembled.</div>`}
-    ${groups.map(([setNum, g]) => html`<div key=${setNum} style="margin-bottom:12px">
-      <div class="label" style="margin:0 2px 8px">→ back to ${g.setName} · ${g.list.reduce((a, x) => a + x.qty, 0)} pcs</div>
-      ${g.list.map(a => html`<div key=${a.id} class="row" style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin-bottom:6px">
-        ${a.img ? html`<img class="partimg" src=${a.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
+      const outRow = a => html`<div key=${a.id} class="row" style="background:var(--panel);border:1px solid var(--purple);border-radius:12px;padding:8px 10px;margin-bottom:6px">
+        <${Thumb} src=${a.img} size=${40} />
         <div style="flex:1;min-width:0">
-          <div class="clamp2" style="font-size:13px;line-height:1.25">${a.partName}</div>
-          <div class="dim mono" style="font-size:11px">${a.colorName} · ${a.qty} out</div>
+          <div class="clamp2" style="font-size:13px">${a.setName || a.buyLabel || "Loose / PAB"}</div>
+          <div class="dim mono" style="font-size:11px">${a.setNum || "🛍 Loose / PAB"} · ${a.colorName || "—"} · ${a.qty} in this MOC</div>
         </div>
-        <button class="step" style="width:46px;color:var(--green);border-color:var(--green)" onClick=${() => giveBack(a, 1)}>⇠1</button>
-        <button class="step" style="width:52px;font-size:12px;color:var(--green);border-color:var(--green)" onClick=${() => giveBack(a, a.qty)}>⇠ all</button>
-      </div>`)}
-    </div>`)}
-    <button class="btn" onClick=${() => setMode(null)}>Done</button>
-  </div>`;
-
-  const mocTags = resolveTags(tags, moc.tags);
-  return html`<div class="navin" key="moc-main">
-    <${Header} title=${moc.name} sub=${`${stats.pcs} real pcs · ${stats.sets} source set${stats.sets === 1 ? "" : "s"}${wantTotal ? ` · ${wantPct}% of plan` : ""}`} onBack=${onBack} />
-    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
-      ${mocTags.length > 0 && html`<${TagChips} tags=${mocTags} />`}
-      <button class="chip" style="border-color:var(--purple);color:var(--purple)" onClick=${() => setTagPick(true)}>🏷 ${mocTags.length ? "Edit tags" : "Add tags"}</button>
-    </div>
-    <div class="card row" style="gap:14px">
-      ${moc.photoIds?.[0] && photoSrc(moc.photoIds[0])
-        ? html`<img style="width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid var(--line);flex-shrink:0" src=${photoSrc(moc.photoIds[0])}/>`
-        : html`<div class="setimg" style="width:72px;height:72px;background:var(--panel2);border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:26px">🧩</div>`}
-      <div style="flex:1;min-width:0">
-        ${moc.notes && html`<div class="dim clamp2" style="font-size:13px;margin-bottom:6px">${moc.notes}</div>`}
-        <button class="ghost" style="padding:9px" onClick=${() => setEditing(true)}>Edit MOC…</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <${Label}>Status</${Label}>
-      <div class="row" style="gap:6px">
-        ${MOC_STATUS.map(([id, label, color]) => html`<${Chip} label=${label} color=${color} active=${moc.status === id}
-          onClick=${() => upsertMoc({ ...moc, status: id })} />`)}
-      </div>
-    </div>
-
-    <${Acc} title="Parts List" open=${partsOpen} onToggle=${() => setPartsOpen(v => !v)}
-      summary=${wantTotal ? `${wantHave}/${wantTotal} · ${wantPct}%` : "empty"}>
-      ${importMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin:0 0 8px">✓ ${importMsg}</div>`}
-      <div class="dim" style="font-size:12px;margin-bottom:8px">Every part this build needs. The <b>have/need</b> count is only what you've actually <b>transferred</b> in (<b>♻️</b> on the row) or bought — donor / "in sets" pieces are shown as available but don't count until you tap <b>→</b> to transfer them. Tick parts (or <b>Select all missing</b>) to push to a want list; <b>swipe a row left</b> to delete it.</div>
-      ${wanted.length === 0 && html`<div class="dim" style="font-size:12px;margin-bottom:8px">No parts yet — open <b>➕ Add / import parts</b> below to paste a Studio (XML) / Rebrickable (CSV) list or add part numbers by hand.</div>`}
-      ${wanted.length > 0 && (() => {
-        // set-style filter + grouping (mirrors the set & WTB parts lists): text filter + hide-have,
-        // group by colour/part, expand/collapse all, reset filter. {w,i} keeps each line's original
-        // index so select / edit / delete still address the right row after filtering.
-        const ql = pq.trim().toLowerCase();
-        const vis = wanted.map((w, i) => ({ w, i })).filter(({ w }) =>
-          (!hideHave || haveFor(w.partNum) < (w.qty || 1)) &&
-          (!ql || (w.name || "").toLowerCase().includes(ql) || (w.partNum || "").toLowerCase().includes(ql) || (w.colorName || "").toLowerCase().includes(ql)));
-        const map = new Map();
-        for (const it of vis) { const g = partGroup === "type" ? partType(it.w.name, it.w.partNum) : colorGroup(it.w.colorName); if (!map.has(g)) map.set(g, []); map.get(g).push(it); }
-        const rank = partGroup === "type" ? typeRank : groupRank;
-        const entries = [...map.entries()].sort((a, b) => rank(a[0]).localeCompare(rank(b[0])));
-        const allOpen = entries.length > 0 && entries.every(([g]) => wantOpen.has(g));
-        const toggleAll = () => setWantOpen(saveWantOpen(allOpen ? new Set() : new Set(entries.map(([g]) => g))));
-        const lnk = "background:none;border:none;padding:0;font:inherit;color:var(--blue);font-weight:700;text-decoration:underline;cursor:pointer";
-        return html`<div>
-          <input placeholder="Filter parts (name / number / colour)" value=${pq} onInput=${e => setPq(e.target.value)} />
-          <div class="row" style="gap:6px;margin:10px 0 8px;flex-wrap:wrap">
-            <${Chip} label=${partGroup === "type" ? "Group: Part" : "Group: Colour"} color="var(--blue)" active onClick=${() => setPartGroup(partGroup === "type" ? "color" : "type")} />
-            <${Chip} label="Hide have" color="var(--green)" active=${hideHave} onClick=${() => setHideHave(v => !v)} />
-            <${Chip} label=${allOpen ? "⌃ All" : "⌄ All"} color="var(--dim)" active=${false} onClick=${toggleAll} />
-            <${Chip} label="↺ Reset filter" color="var(--red)" active=${false} onClick=${() => { setPq(""); setHideHave(false); }} />
-          </div>
-          <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
-            <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${selectAllMissing}>Select all missing</button>
-            ${sel.size > 0 && html`<button class="ghost" style="padding:7px 10px;font-size:12px;width:auto" onClick=${() => setSel(new Set())}>Clear selection</button>`}
-            <button class="ghost" style="padding:7px 10px;font-size:12px;width:auto;margin-left:auto;color:var(--red);border-color:var(--red)"
-              onClick=${() => { if (confirm("Clear the entire parts list?")) { setSel(new Set()); upsertMoc({ ...moc, wanted: [] }); } }}>Clear parts list</button>
-          </div>
-          ${entries.length === 0 && html`<div class="card dim" style="text-align:center;padding:16px;font-size:13px">No parts match the filter.</div>`}
-          ${entries.map(([g, items]) => {
-            const gNeed = items.reduce((a, x) => a + (x.w.qty || 0), 0);
-            const gHave = items.reduce((a, x) => a + Math.min(haveFor(x.w.partNum), x.w.qty || 0), 0);
-            const open = ql.length > 0 || wantOpen.has(g);
-            return html`<div key=${g} style="margin-bottom:6px">
-              <button class="row" onClick=${() => toggleWant(g)}
-                style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
-                <span class="label" style="margin:0">${g} · ${items.length}</span>
-                <span class="row" style="gap:10px">
-                  <span class="mono" style=${`font-size:12px;font-weight:700;color:${gHave >= gNeed ? "var(--green)" : "var(--dim)"}`}>${gHave}/${gNeed}</span>
-                  <span class="dim">${open ? "▾" : "▸"}</span>
-                </span>
-              </button>
-              ${open && html`<div style="margin-top:6px">
-              ${items.map(({ w, i }) => { const have = haveFor(w.partNum), ok = have >= w.qty, picked = sel.has(i), dn = donorFor(w.partNum), av = inSetsFor(w.partNum), tr = allocFor(w.partNum);
-                // colour-split counts: exact = the MOC's colour, other = same mould, other colours
-                const dnS = splitSources(w, "donor"), avS = splitSources(w, "avail");
-                const srcLink = (s, kind, word, first) => {
-                  const e = freePcs(s.exact), o = freePcs(s.other);
-                  if (!e && !o) return null;
-                  const open = ev => { ev.stopPropagation(); setSourceFor({ pn: w.partNum, kind, w }); };
-                  if (!s.hasColor) return html`<button style=${lnk} onClick=${open}>${first ? "Found " : ""}${e + o} in ${word}</button>`;
-                  return html`<button style=${lnk} onClick=${open}>${e > 0 ? `${first ? "Found " : ""}${e} in ${word}` : `0 in ${word}`}${o > 0 ? html`<span class="dim" style="font-weight:600"> +${o} other</span>` : ""}</button>`;
-                };
-                const border = picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)";
-                return html`<${SwipeRow} key=${i}
-                  onEdit=${() => setEditWanted({ i, w })}
-                  onDelete=${() => { setSel(new Set()); upsertMoc({ ...moc, wanted: wanted.filter((_, j) => j !== i) }); }}>
-                  <div class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;opacity:${ok && !picked ? .65 : 1}`}>
-                  <button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${picked ? "var(--blue)" : "var(--dim)"};background:${picked ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${() => toggleSel(i)}>${picked ? "✓" : ""}</button>
-                  <span style="flex-shrink:0;cursor:pointer" onClick=${() => setViewPart({ img: partImgFor(w), partName: w.name || w.partNum, partNumber: w.partNum, colorName: w.colorName || "" })}>
-                    <${Thumb} src=${partImgFor(w)} size=${40} />
-                  </span>
-                  <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => toggleSel(i)}>
-                    <div class="clamp2" style="font-size:13px;line-height:1.25">${w.name || w.partNum}</div>
-                    <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}${tr > 0 ? html` · <span style="color:var(--purple);font-weight:700">♻️${tr}</span>` : ""}${(dn > 0 || av > 0) ? html` · ${[
-                      srcLink(dnS, "donor", "donor", true),
-                      srcLink(avS, "avail", "sets", !(dn > 0)),
-                    ].filter(Boolean).map((el, j) => html`${j ? " • " : ""}${el}`)}` : ""}</div>
-                    ${(() => { const pt = resolveTags(tags, partTagIds(w.partNum)); return pt.length ? html`<div style="margin-top:3px"><${TagChips} tags=${pt} small /></div>` : null; })()}
-                  </div>
-                  <button class="step" style="width:34px" disabled=${(w.qty || 1) <= 1} onClick=${() => setWantQtyAt(i, (w.qty || 1) - 1)}>−</button>
-                  <div class="mono" style=${`font-size:14px;font-weight:700;min-width:38px;text-align:center;color:${ok ? "var(--green)" : "var(--text)"}`}>${Math.min(have, w.qty)}/${w.qty}</div>
-                  <button class="step plus" style="width:34px" onClick=${() => setWantQtyAt(i, (w.qty || 1) + 1)}>+</button>
-                </div></${SwipeRow}>`; })}
+        <button class="step" style="width:40px;color:var(--green);border-color:var(--green)" onClick=${() => giveBack(a, 1)}>⇠1</button>
+        <button class="step" style="width:50px;font-size:12px;color:var(--green);border-color:var(--green)" onClick=${() => giveBack(a, a.qty)}>⇠ all</button>
+      </div>`;
+      const exact = [...src.donor.exact, ...src.sets.exact, ...src.pab.exact];
+      const other = [...src.donor.other, ...src.sets.other, ...src.pab.other];
+      return html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setTransferFor(null); }}>
+        <div class="sheet">
+          <${Header} title="⇄ Transfer parts" sub=${`${w.name || w.partNum}${colour ? ` · ${colour}` : ""}`} onBack=${() => setTransferFor(null)} />
+          ${mine.length > 0 && html`<div style="margin-bottom:12px">
+            <div class="label" style="margin:0 2px 6px;color:var(--purple)">♻️ In this MOC · ${mine.reduce((a, x) => a + x.qty, 0)} pc${mine.reduce((a, x) => a + x.qty, 0) === 1 ? "" : "s"} — ⇠ transfers OUT (back home)</div>
+            ${mine.map(outRow)}
+          </div>`}
+          <div class="label" style="margin:0 2px 6px">Transfer IN from…</div>
+          ${exact.length + other.length === 0 && html`<div class="card dim" style="text-align:center">Nothing available in your sets, donors or Loose / PAB buys right now.</div>`}
+          ${!src.hasColor
+            ? [...exact, ...other].map(s => inRow(s, true))
+            : html`<div>
+              ${exact.length > 0 && html`<div>
+                <div class="label" style="margin:0 2px 6px;color:var(--green)">✓ ${colour || "matching colour"} — exact · ${freeOf(exact)} pc${freeOf(exact) === 1 ? "" : "s"}</div>
+                ${exact.map(s => inRow(s, false))}
               </div>`}
-            </div>`;
-          })}
-        </div>`;
-      })()}
-      ${sel.size > 0 && html`<button class="btn blue" style="margin-top:8px" onClick=${addSelToWant}>🛒 Add ${sel.size} ticked part${sel.size === 1 ? "" : "s"} to want list</button>`}
-      ${wtbMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin-top:6px">✓ ${wtbMsg}</div>`}
+              ${exact.length === 0 && other.length > 0 && html`<div class="card dim" style="text-align:center;font-size:13px;padding:14px">No ${colour || "exact colour"} available — only other colours below.</div>`}
+              ${other.length > 0 && html`<div style="margin-top:10px">
+                <div class="label" style="margin:0 2px 6px">Other colours · ${freeOf(other)} pc${freeOf(other) === 1 ? "" : "s"}</div>
+                ${other.map(s => inRow(s, true))}
+              </div>`}
+            </div>`}
+          <button class="btn" style="margin-top:6px" onClick=${() => setTransferFor(null)}>Done</button>
+        </div>
+      </div></${Portal}>`;
+    })()}
+  `;
 
-      ${wanted.length > 0 && wanted.some(w => !w.img) && html`<button class="ghost" style="margin-top:8px;padding:9px" disabled=${imgBusy} onClick=${fetchPartImages}>${imgBusy ? "Fetching images…" : "🖼 Get part images"}</button>`}
+  // ---------- view: parts-list EDITOR (the plan — editable & importable) ----------
+  if (view === "plan") {
+    const vis = wanted.map((w, i) => ({ w, i })).filter(({ w }) => matchQ(w));
+    const entries = groupedOf(vis);
+    return html`<div class="navin" key="moc-plan">
+      <${Header} title="✎ Parts list" sub=${`${moc.name} · ${wanted.length} lot${wanted.length === 1 ? "" : "s"} · ${wantTotal} pcs`} onBack=${() => setView(null)} />
+      <div class="dim" style="font-size:12px;margin-bottom:10px">The <b>plan</b> — every part this build needs and how many (<b>− / +</b> edits the needed qty). The build tracker follows this list. Tap a row to edit its colour/qty; <b>swipe left</b> to delete.</div>
+      ${importMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin:0 0 8px">✓ ${importMsg}</div>`}
 
-      <button class="ghost" style="margin-top:10px;text-align:left" onClick=${() => setAddOpen(v => !v)}>${addOpen ? "▾" : "▸"} ➕ Add / import parts</button>
-      ${addOpen && html`<div style="margin-top:8px">
-        <${Label}>By part number</${Label}>
+      <div class="card">
+        <${Label}>Add by part number</${Label}>
         <div class="row" style="gap:6px">
           <input style="flex:1" name="bt-want-part" autocomplete="off" autocapitalize="characters" placeholder="Part # to add" value=${wantPart} onInput=${e => setWantPart(e.target.value)} />
           <input style="width:52px;text-align:center" inputmode="numeric" value=${wantQty} onInput=${e => setWantQty(e.target.value)} />
@@ -2626,15 +2618,198 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
           </div>`)}
         </div>`}
         <div class="label" style="margin-top:12px">Import a set's exact parts (Rebrickable)</div>
-        <div class="dim" style="font-size:12px;margin-bottom:6px">Building this set from your own bulk instead of buying it? Pull its full inventory in as the parts list, then track what you have.</div>
         <div class="row" style="gap:6px">
           <input style="flex:1" inputmode="numeric" placeholder="Set # — e.g. 75281" value=${importSet} onInput=${e => setImportSet(e.target.value)}
             onKeyDown=${e => { if (e.key === "Enter") importSetParts(); }} />
           <button class="step plus" style="width:auto;padding:0 12px;font-size:13px" disabled=${importSetBusy || !importSet.trim()} onClick=${importSetParts}>${importSetBusy ? "…" : "Import"}</button>
         </div>
-        <button class="ghost" style="margin-top:10px" onClick=${() => setImportOpen(true)}>⬇ Import from XML / CSV…</button>
+        <button class="ghost" style="margin-top:10px" onClick=${() => setImportOpen(true)}>⬇ Import from XML / CSV (Studio, Rebrickable)…</button>
+      </div>
+
+      ${wanted.length > 0 && html`<div class="card" style="padding:12px">
+        <input placeholder="Filter parts (name / number / colour)" value=${pq} onInput=${e => setPq(e.target.value)} />
+        ${filterChips(entries)}
       </div>`}
-    </${Acc}>
+      ${wanted.length === 0 && html`<div class="card dim" style="text-align:center;padding:20px">No parts yet — add or import above.</div>`}
+      ${entries.length === 0 && wanted.length > 0 && html`<div class="card dim" style="text-align:center;padding:16px;font-size:13px">No parts match the filter.</div>`}
+      ${entries.map(([g, items]) => {
+        const open = ql.length > 0 || wantOpen.has(g);
+        const gPcs = items.reduce((a, x) => a + (x.w.qty || 0), 0);
+        return html`<div key=${g} style="margin-bottom:6px">
+          <button class="row" onClick=${() => toggleWant(g)}
+            style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
+            <span class="label" style="margin:0">${g} · ${items.length}</span>
+            <span class="row" style="gap:10px">
+              <span class="mono dim" style="font-size:12px;font-weight:700">${gPcs} pcs</span>
+              <span class="dim">${open ? "▾" : "▸"}</span>
+            </span>
+          </button>
+          ${open && html`<div style="margin-top:6px">
+            ${items.map(({ w, i }) => html`<${SwipeRow} key=${i}
+              onEdit=${() => setEditWanted({ i, w })}
+              onDelete=${() => removeWanted(i)}>
+              <div class="row" style="gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px">
+                <span style="flex-shrink:0;cursor:pointer" onClick=${() => setViewPart({ img: partImgFor(w), partName: w.name || w.partNum, partNumber: w.partNum, colorName: w.colorName || "" })}>
+                  <${Thumb} src=${partImgFor(w)} size=${40} />
+                </span>
+                <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => setEditWanted({ i, w })}>
+                  <div class="clamp2" style="font-size:13px;line-height:1.25">${w.name || w.partNum}</div>
+                  <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}</div>
+                </div>
+                <button class="step" style="width:34px" disabled=${(w.qty || 1) <= 1} onClick=${() => setWantQtyAt(i, (w.qty || 1) - 1)}>−</button>
+                <div class="mono" style="font-size:14px;font-weight:700;min-width:34px;text-align:center">${w.qty || 1}</div>
+                <button class="step plus" style="width:34px" onClick=${() => setWantQtyAt(i, (w.qty || 1) + 1)}>+</button>
+              </div>
+            </${SwipeRow}>`)}
+          </div>`}
+        </div>`;
+      })}
+
+      ${wanted.length > 0 && wanted.some(w => !w.img) && html`<button class="ghost" style="margin-top:4px;padding:9px" disabled=${imgBusy} onClick=${fetchPartImages}>${imgBusy ? "Fetching images…" : "🖼 Get part images"}</button>`}
+      ${wanted.length > 0 && html`<button class="ghost" style="margin-top:8px;color:var(--red);border-color:var(--red)"
+        onClick=${() => { if (confirm("Clear the entire parts list? (Transferred pieces stay in the MOC as 'not in the parts list'.)")) { setSelIds(new Set()); upsertMoc({ ...moc, wanted: [] }); } }}>Clear parts list</button>`}
+      <div style="height:8px"></div>
+      <button class="btn" onClick=${() => setView(null)}>Done — back to the build</button>
+      ${sheets}
+    </div>`;
+  }
+
+  // ---------- view: BUILD tracker (read-only plan, set-style logging) ----------
+  const st = mocStatus(moc.status);
+  const mocTags = resolveTags(tags, moc.tags);
+  const vis = wanted.map((w, i) => ({ w, i })).filter(({ w, i }) => matchQ(w) && (!hideHave || haveAt(i) < (w.qty || 1)));
+  const entries = groupedOf(vis);
+  const visIdx = vis.map(x => x.i);
+  const orphans = allocAssign.orphans;
+  const orphanPcs = orphans.reduce((a, x) => a + x.qty, 0);
+  const trTotal = stats.pcs;
+  const missingAll = wanted.map((w, i) => ({ w, short: Math.max(0, (w.qty || 0) - haveAt(i)) })).filter(x => x.short > 0);
+  const toggleSel = i => setSelIds(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; });
+  const lnk = "background:none;border:none;padding:0;font:inherit;color:var(--blue);font-weight:700;text-decoration:underline;cursor:pointer";
+
+  const statusLine = wantTotal
+    ? html`<span><span style=${wantHave >= wantTotal ? "color:var(--green);font-weight:700" : "font-weight:700"}>${wantHave}</span> / ${wantTotal} pcs${trTotal > 0 ? html` · <span style="color:var(--purple);font-weight:700">♻️ ${trTotal} in</span>` : ""}${stats.sources > 0 ? html` <span class="dim">· ${stats.sources} source${stats.sources === 1 ? "" : "s"}</span>` : ""}</span>`
+    : trTotal > 0 ? html`<span><span style="color:var(--purple);font-weight:700">♻️ ${trTotal} pcs in</span> · no parts list yet</span>`
+    : html`<span class="dim">no parts yet</span>`;
+
+  return html`<div class="navin" key="moc-main">
+    <${Header} title=${moc.name} sub=${wantTotal ? `${wantHave}/${wantTotal} pcs · ${wantPct}% of plan` : `${trTotal} pcs in`} onBack=${onBack} />
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      ${mocTags.length > 0 && html`<${TagChips} tags=${mocTags} />`}
+      <button class="chip" style="border-color:var(--purple);color:var(--purple)" onClick=${() => setTagPick(true)}>🏷 ${mocTags.length ? "Edit tags" : "Add tags"}</button>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:14px">
+        ${moc.photoIds?.[0] && photoSrc(moc.photoIds[0])
+          ? html`<img style="width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid var(--line);flex-shrink:0" src=${photoSrc(moc.photoIds[0])} onClick=${() => setEditing(true)}/>`
+          : html`<div class="setimg" style="width:72px;height:72px;background:var(--panel2);border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:26px" onClick=${() => setEditing(true)}>🧩</div>`}
+        <div style="flex:1;min-width:0">
+          <div class="row" style="gap:6px;flex-wrap:wrap">
+            ${MOC_STATUS.map(([id, label, color]) => html`<button key=${id} class="badge"
+              style=${moc.status === id ? `background:${color};color:#1C1A17;border:none;padding:4px 9px` : "background:transparent;color:var(--dim);border:1px solid var(--line);padding:4px 9px"}
+              onClick=${() => upsertMoc({ ...moc, status: id })}>${label}${moc.status === id ? " ✓" : ""}</button>`)}
+          </div>
+          <div class="dim" style="font-size:13px;margin-top:6px">${statusLine}</div>
+          ${moc.notes && html`<div class="dim clamp2" style="font-size:12px;margin-top:4px">${moc.notes}</div>`}
+          <button class="ghost" style="padding:7px 10px;width:auto;font-size:12px;margin-top:6px" onClick=${() => setEditing(true)}>Edit MOC…</button>
+        </div>
+        ${wantTotal > 0 && html`<${Ring} pct=${wantPct} size=${64} />`}
+      </div>
+    </div>
+
+    <button class="ghost" style="margin-bottom:10px;border-color:var(--purple);color:var(--purple)"
+      onClick=${() => setView("plan")}>✎ Edit parts list · ${wanted.length} lot${wanted.length === 1 ? "" : "s"} · ${wantTotal} pcs</button>
+    ${importMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin:0 0 8px">✓ ${importMsg}</div>`}
+
+    ${wanted.length === 0 && html`<div class="card" style="text-align:center;padding:22px">
+      <div style="font-weight:700;margin-bottom:6px">No parts list yet</div>
+      <div class="dim" style="font-size:13px;margin-bottom:12px">Build the plan first — import a Studio / Rebrickable list, pull a real set's inventory, or add parts by hand. This page then tracks the build exactly like a set.</div>
+      <button class="btn" onClick=${() => setView("plan")}>✎ Build the parts list</button>
+    </div>`}
+
+    ${wanted.length > 0 && html`<div class="card" style="padding:12px">
+      <input placeholder="Filter parts (name / number / colour)" value=${pq} onInput=${e => setPq(e.target.value)} />
+      ${filterChips(entries)}
+      <div class="dim" style="font-size:11px;margin-top:8px">− / + logs pieces you have · <b>⇄</b> transfers pieces in from donor sets / your sets / Loose-PAB (and back out) · ♻️ = transferred in · 🛒 = bought via the want list.</div>
+    </div>`}
+
+    ${entries.length === 0 && wanted.length > 0 && html`<div class="card dim" style="text-align:center;padding:16px;font-size:13px">No parts match the filter.</div>`}
+    ${entries.map(([g, items]) => {
+      const gNeed = items.reduce((a, x) => a + (x.w.qty || 0), 0);
+      const gHave = items.reduce((a, x) => a + Math.min(haveAt(x.i), x.w.qty || 0), 0);
+      const open = ql.length > 0 || wantOpen.has(g);
+      return html`<div key=${g} style="margin-bottom:8px">
+        <button class="row grouphdr" onClick=${() => toggleWant(g)}
+          style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
+          <span class="label" style="margin:0">${g} · ${items.length}</span>
+          <span class="row" style="gap:10px">
+            <span class="mono" style=${`font-size:12px;font-weight:700;color:${gHave >= gNeed ? "var(--green)" : "var(--dim)"}`}>${gHave}/${gNeed}</span>
+            <span class="dim">${open ? "▾" : "▸"}</span>
+          </span>
+        </button>
+        ${open && html`<div style="margin-top:6px">
+          ${items.map(({ w, i }) => {
+            const need = w.qty || 0, tr = transAt(i), got = gotAt(i), man = w.qtyHave || 0, have = man + tr + got;
+            const ok = have >= need, picked = selIds.has(i);
+            const src = rowSources(w);
+            const dnE = freeOf(src.donor.exact), dnO = freeOf(src.donor.other);
+            const stE = freeOf(src.sets.exact), stO = freeOf(src.sets.other);
+            const pbE = freeOf(src.pab.exact), pbO = freeOf(src.pab.other);
+            const openSheet = ev => { ev.stopPropagation(); setTransferFor(i); };
+            const srcBit = (E, O, word, first) => {
+              if (E + O <= 0) return null;
+              return html`<button style=${lnk} onClick=${openSheet}>${E > 0 ? `${first ? "Found " : ""}${E} in ${word}` : `0 in ${word}`}${O > 0 ? html`<span class="dim" style="font-weight:600"> +${O} other</span>` : ""}</button>`;
+            };
+            const bits = [srcBit(dnE, dnO, "donor", true), srcBit(stE, stO, "sets", dnE + dnO === 0), srcBit(pbE, pbO, "PAB", dnE + dnO + stE + stO === 0)].filter(Boolean);
+            const border = picked ? "var(--blue)" : ok ? "var(--green)" : "var(--line)";
+            const canTransfer = bits.length > 0 || tr > 0;
+            return html`<div key=${i} style="margin-bottom:6px">
+              <div class="row" style=${`gap:6px;background:var(--panel);border:1px solid ${border};border-radius:12px;padding:8px 10px;opacity:${ok && !picked ? .65 : 1}`}>
+                <button class="step" style=${`width:26px;height:26px;border-radius:50%;font-size:13px;font-weight:800;flex-shrink:0;padding:0;border:2px solid ${picked ? "var(--blue)" : "var(--dim)"};background:${picked ? "var(--blue)" : "transparent"};color:#1C1A17`} onClick=${() => toggleSel(i)}>${picked ? "✓" : ""}</button>
+                <span style="flex-shrink:0;cursor:pointer" onClick=${() => setViewPart({ img: partImgFor(w), partName: w.name || w.partNum, partNumber: w.partNum, colorName: w.colorName || "" })}>
+                  <${Thumb} src=${partImgFor(w)} size=${40} />
+                </span>
+                <div style="flex:1;min-width:0;cursor:pointer" onClick=${() => fillToggle(i)}>
+                  <div class="clamp2" style="font-size:13px;line-height:1.25">${w.name || w.partNum}</div>
+                  <div class="dim mono" style="font-size:11px">${w.colorName || "—"} · ${w.partNum}${tr > 0 ? html` · <span style="color:var(--purple);font-weight:700">♻️${tr}</span>` : ""}${got > 0 ? html` · <span style="color:var(--green);font-weight:700">🛒${got}</span>` : ""}${bits.length ? html` · ${bits.map((el, j) => html`${j ? " • " : ""}${el}`)}` : ""}</div>
+                  ${(() => { const pt = resolveTags(tags, partTagIds(w.partNum)); return pt.length ? html`<div style="margin-top:3px"><${TagChips} tags=${pt} small /></div>` : null; })()}
+                </div>
+                <button class="step" style="width:32px;color:var(--purple);border-color:var(--purple)" disabled=${!canTransfer} onClick=${openSheet}>⇄</button>
+                <button class="step" style="width:34px" disabled=${man === 0} onClick=${() => bump(i, -1)}>−</button>
+                <div class="mono" style=${`font-size:14px;font-weight:700;min-width:38px;text-align:center;color:${ok ? "var(--green)" : "var(--text)"}`}>${Math.min(have, need)}/${need}</div>
+                <button class="step plus" style="width:34px" disabled=${have >= need} onClick=${() => bump(i, +1)}>+</button>
+              </div>
+              ${lastAct && lastAct.i === i && html`<div style=${`font-size:10px;font-weight:800;margin:1px 8px 0 0;text-align:right;white-space:nowrap;color:${lastAct.applied > 0 ? "var(--green)" : "var(--red)"}`}>
+                ${lastAct.applied > 0 ? `+${lastAct.applied}` : lastAct.applied} → ${lastAct.have}/${lastAct.need}</div>`}
+            </div>`;
+          })}
+        </div>`}
+      </div>`;
+    })}
+
+    ${orphans.length > 0 && html`<div style="margin-bottom:8px">
+      <div class="label" style="margin:8px 2px 6px;color:var(--purple)">♻️ Transferred — not in the parts list · ${orphanPcs} pcs</div>
+      ${orphans.map(a => html`<div key=${a.id} class="row" style="gap:6px;background:var(--panel);border:1px solid var(--purple);border-radius:12px;padding:8px 10px;margin-bottom:6px">
+        <${Thumb} src=${a.img} size=${40} />
+        <div style="flex:1;min-width:0">
+          <div class="clamp2" style="font-size:13px;line-height:1.25">${a.partName || a.partNumber}</div>
+          <div class="dim mono" style="font-size:11px">${a.colorName || "—"} · ${a.partNumber} · ×${a.qty} from ${a.setName || a.buyLabel || "Loose / PAB"}</div>
+        </div>
+        <button class="step" style="width:34px" title="Add to the parts list" onClick=${() => adoptOrphan(a)}>＋</button>
+        <button class="step" style="width:50px;font-size:12px;color:var(--green);border-color:var(--green)" onClick=${() => giveBack(a, a.qty)}>⇠ all</button>
+      </div>`)}
+      <div class="dim" style="font-size:11px;margin:0 2px">Pieces pulled in that the plan doesn't mention. ＋ adds the line to the parts list; ⇠ all sends them home.</div>
+    </div>`}
+
+    ${wtbMsg && html`<div class="card" style="color:var(--green);font-size:13px;font-weight:600;margin-bottom:8px">✓ ${wtbMsg}</div>`}
+    ${missingAll.length > 0 && html`<button class="ghost blue" style="border-color:var(--blue);color:var(--blue);margin-bottom:8px"
+      onClick=${() => {
+        const parts = missingAll.map(x => ({ partNum: x.w.partNum, name: x.w.name, colorName: x.w.colorName, blColorId: x.w.blColorId, rbColorId: x.w.rbColorId, img: x.w.img, qty: x.short }));
+        pushMissingToWtb?.({ linkType: "moc", linkId: moc.id, name: moc.name, parts });
+        setWtbMsg(`Added ${parts.length} missing part${parts.length === 1 ? "" : "s"} to a want list.`);
+        setTimeout(() => setWtbMsg(""), 3500);
+      }}>🛒 ${linkedWtb ? "Update" : "Add"} missing to want list (${missingAll.reduce((a, x) => a + x.short, 0)} pcs)</button>`}
 
     <div class="card">
       <${Label}>Instructions (PDF) · ${(moc.pdfs || []).length}</${Label}>
@@ -2649,106 +2824,41 @@ function MocDetail({ moc, mocs, index, upsertMoc, deleteMoc, wtbLists = [], push
       <div class="dim" style="font-size:12px;margin-top:8px">Stored on this device; tap to save/open via the iOS sheet. PDFs are NOT included in JSON backups — keep originals in Files.</div>
     </div>
 
-    <div class="row" style="gap:8px;margin-bottom:12px">
-      <button class="btn" style="flex:1" onClick=${() => { setMode("add"); setSrcSet(groups[0]?.[0] || ""); }}>+ Add parts</button>
-      <button class="ghost" style="flex:1" disabled=${stats.pcs === 0} onClick=${() => setMode("return")}>⇠ Return parts</button>
-    </div>
-
-    ${groups.length === 0 && html`<div class="card dim" style="text-align:center;padding:24px">
-      No real parts allocated yet. + Add parts pulls from a tracked set; the → button on any set part row pushes from there.</div>`}
-    ${groups.map(([setNum, g]) => {
-      const open = openGroups.has(setNum);
-      const pcs = g.list.reduce((a, x) => a + x.qty, 0);
-      return html`<div key=${setNum} style="margin-bottom:8px">
-        <button class="row" onClick=${() => toggleGroup(setNum)}
-          style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;color:var(--text);justify-content:space-between">
-          <span class="label ellip" style="margin:0;min-width:0;flex:1;text-align:left">${g.setName} · ${setNum}</span>
-          <span class="row" style="gap:10px;flex-shrink:0">
-            <span class="mono dim" style="font-size:12px;font-weight:700">${pcs} pcs</span>
-            <span class="dim">${open ? "▾" : "▸"}</span>
-          </span>
-        </button>
-        ${open && html`<div style="margin-top:6px">
-          ${g.list.map(a => html`<div key=${a.id} class="row" style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin-bottom:6px">
-            ${a.img ? html`<img class="partimg" src=${a.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
-            <div style="flex:1;min-width:0">
-              <div class="clamp2" style="font-size:13px;line-height:1.25">${a.partName}</div>
-              <div class="dim mono" style="font-size:11px">${a.colorName} · ${a.partNumber}</div>
-            </div>
-            <span class="mono" style="font-weight:700;font-size:13px;color:var(--purple)">×${a.qty}</span>
-          </div>`)}
-        </div>`}
-      </div>`;
-    })}
-
-    <div style="height:8px"></div>
     ${!confirmDel
       ? html`<button class="ghost" style="color:var(--red);border-color:var(--red)" onClick=${() => setConfirmDel(true)}>Delete MOC…</button>`
       : html`<button class="btn red" onClick=${() => deleteMoc(moc.id)}>Tap again — parts stay where they physically are, tags are removed</button>`}
     <div style="height:16px"></div>
 
-    ${importOpen && html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setImportOpen(false); }}>
-      <div class="sheet">
-        <${Header} title="Import parts list" onBack=${() => setImportOpen(false)} />
-        <div class="dim" style="font-size:12px;margin-bottom:8px">Paste a BrickLink Studio export (XML) or a Rebrickable parts CSV/TSV. Part numbers + quantities are read; colours kept as-is. Imports append to the wanted list.</div>
-        <textarea style="height:150px;font-family:ui-monospace,monospace;font-size:12px" placeholder="Paste XML or CSV here…" value=${importText} onInput=${e => setImportText(e.target.value)}></textarea>
-        <div style="height:10px"></div>
+    ${selIds.size > 0 && (() => {
+      const selList = [...selIds].filter(i => wanted[i]);
+      const allHave = selList.length > 0 && selList.every(i => haveAt(i) >= (wanted[i].qty || 0));
+      return html`<div style="position:sticky;bottom:0;margin:0 -16px;background:var(--panel2);border-top:1px solid var(--line);padding:10px 16px 12px;z-index:9">
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          <span class="mono dim" style="font-size:12px;flex:1">${selIds.size} selected</span>
+          <button class="chip" style="border-color:var(--line);color:var(--dim)" onClick=${() => setSelIds(new Set(visIdx))}>All shown</button>
+          <button class="chip" style="border-color:var(--line);color:var(--dim)" onClick=${() => setSelIds(new Set())}>None</button>
+        </div>
         <div class="row" style="gap:8px">
-          <button class="btn" style="flex:1" disabled=${!importText.trim()} onClick=${doImport}>Import</button>
-          <button class="ghost" style="flex:1" onClick=${() => { setImportText(""); setImportOpen(false); }}>Cancel</button>
+          <button class=${allHave ? "btn red" : "btn green"} style="flex:3" onClick=${() => {
+            upsertMoc({ ...moc, wanted: wanted.map((w, j) => {
+              if (!selIds.has(j)) return w;
+              const fixed = transAt(j) + gotAt(j);
+              return { ...w, qtyHave: allHave ? 0 : Math.max(0, (w.qty || 0) - fixed) };
+            }) });
+            setSelIds(new Set());
+          }}>${allHave ? `Mark ${selIds.size} as not have` : `Mark ${selIds.size} as have`}</button>
+          <button class="ghost" style="flex:1;color:var(--blue);border-color:var(--blue)" onClick=${() => {
+            const parts = selList.map(i => { const w = wanted[i]; const short = Math.max(0, (w.qty || 0) - haveAt(i));
+              return { partNum: w.partNum, name: w.name, colorName: w.colorName, blColorId: w.blColorId, rbColorId: w.rbColorId, img: w.img, qty: short > 0 ? short : (w.qty || 1) }; });
+            pushMissingToWtb?.({ linkType: "moc", linkId: moc.id, name: moc.name, parts });
+            setSelIds(new Set());
+            setWtbMsg(`Added ${parts.length} part${parts.length === 1 ? "" : "s"} to a want list.`);
+            setTimeout(() => setWtbMsg(""), 3500);
+          }}>🛒 Want</button>
         </div>
-      </div>
-    </div></${Portal}>`}
-
-    ${editing && html`<${MocSheet} initial=${moc} onClose=${() => setEditing(false)}
-      onSave=${m => { upsertMoc(m); setEditing(false); }} />`}
-
-    ${tagPick && html`<${TagPickerSheet} title="MOC tags" sub=${moc.name}
-      tags=${tags} selected=${moc.tags || []} createTag=${createTag}
-      onChange=${ids => upsertMoc({ ...moc, tags: ids })} onClose=${() => setTagPick(false)} />`}
-
-    ${viewPart && html`<${PartImgViewer} p=${viewPart} tags=${tags} createTag=${createTag} onRecat=${() => setRecatTick(t => t + 1)} onClose=${() => setViewPart(null)} />`}
-
-    ${editWanted && html`<${PartColorQtySheet} part=${editWanted.w} title="Edit part"
-      onClose=${() => setEditWanted(null)}
-      onSave=${patch => { const { i } = editWanted; upsertMoc({ ...moc, wanted: wanted.map((w, j) => j === i ? { ...w, ...patch } : w) }); setEditWanted(null); }} />`}
-
-    ${sourceFor && (() => {
-      const w = sourceFor.w || { partNum: sourceFor.pn, colorName: "" };
-      const { exact, other, hasColor } = splitSources(w, sourceFor.kind);
-      const want = wantedColorOf(w) || "this colour";
-      const row = (s, off) => html`<div key=${s.meta.setNum + s.part.id} class="row" style=${`background:var(--panel);border:1px solid ${off ? "var(--line)" : "var(--green)"};border-radius:12px;padding:10px;margin-bottom:6px`}>
-        ${s.part.img ? html`<img class="partimg" src=${s.part.img} loading="lazy"/>` : html`<div class="partimg" style="background:var(--panel2)"></div>`}
-        <div style="flex:1;min-width:0">
-          <div class="clamp2" style="font-size:13px">${s.meta.name}</div>
-          <div class="dim mono" style="font-size:11px">${s.meta.setNum} · <span style=${off ? "" : "color:var(--green);font-weight:700"}>${s.part.colorName || "—"}</span> · ${s.free} free${s.donor ? " · ♻️ donor" : ""}</div>
-        </div>
-        <button class="step" style="width:46px;color:var(--purple);border-color:var(--purple)" disabled=${s.free <= 0}
-          onClick=${() => take(s.meta, s.part, s.free)}>→</button>
       </div>`;
-      return html`<${Portal}><div class="modal" onClick=${e => { if (e.target === e.currentTarget) setSourceFor(null); }}>
-        <div class="sheet">
-          <${Header} title=${sourceFor.kind === "donor" ? "In donor sets" : "Found in sets"}
-            sub=${`${sourceFor.pn}${hasColor ? ` · ${want}` : ""}`} onBack=${() => setSourceFor(null)} />
-          <div class="dim" style="font-size:12px;margin-bottom:10px">${sourceFor.kind === "donor" ? "Sets you keep as ♻️ donors. Tap → to pull the part into this MOC." : "Tracked sets not marked built. Tap → to pull the part into this MOC."}</div>
-          ${exact.length + other.length === 0 && html`<div class="card dim" style="text-align:center">None available right now.</div>`}
-          ${!hasColor
-            ? [...exact, ...other].map(s => row(s, true))
-            : html`<div>
-              ${exact.length > 0 && html`<div>
-                <div class="label" style="margin:0 2px 6px;color:var(--green)">✓ ${want} — exact colour · ${freePcs(exact)} pc${freePcs(exact) === 1 ? "" : "s"}</div>
-                ${exact.map(s => row(s, false))}
-              </div>`}
-              ${exact.length === 0 && html`<div class="card dim" style="text-align:center;font-size:13px;padding:14px">No ${want} in ${sourceFor.kind === "donor" ? "donor sets" : "your sets"} — only other colours below.</div>`}
-              ${other.length > 0 && html`<div style="margin-top:10px">
-                <div class="label" style="margin:0 2px 6px">Other colours · ${freePcs(other)} pc${freePcs(other) === 1 ? "" : "s"}</div>
-                ${other.map(s => row(s, true))}
-              </div>`}
-            </div>`}
-          <button class="btn" style="margin-top:6px" onClick=${() => setSourceFor(null)}>Done</button>
-        </div>
-      </div></${Portal}>`;
     })()}
+    ${sheets}
   </div>`;
 }
 
@@ -3361,7 +3471,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
           : html`<div class="setimg" style="background:var(--panel2);border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:22px">🧩</div>`}
         <div style="flex:1;min-width:0">
           <div class="ellip" style="font-weight:700">${m.name}</div>
-          <div class="dim mono" style="font-size:12px">${s.pcs} real pcs from ${s.sets} set${s.sets === 1 ? "" : "s"}${(m.pdfs || []).length ? " · 📄" : ""}</div>
+          <div class="dim mono" style="font-size:12px">${s.pcs} real pcs from ${s.sources} source${s.sources === 1 ? "" : "s"}${(m.pdfs || []).length ? " · 📄" : ""}</div>
           <div class="row" style="margin-top:5px;gap:6px;flex-wrap:wrap;align-items:center">
             <span class="badge" style=${m.status === "built"
               ? "color:#1C1A17;background:var(--green)"
