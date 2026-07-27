@@ -9,6 +9,19 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.65.0 — 2026-07-27
+
+**MOC page rebuilt from scratch — it now works like a set.**
+
+- **Two connected lists.** The **✎ Parts list** (the *plan*) gets its own editor page: add by part number, search Rebrickable by name, import a real set's exact inventory, paste a BrickLink Studio (XML) / Rebrickable (CSV) export, and edit each line's needed qty with a − / + stepper (swipe to edit colour / delete). The **build tracker** on the main page is a *read-only* copy of that plan, rendered exactly like a set's parts list — − / + steps the qty you **have**, tap the name to toggle full, complete rows go green and dim.
+- **⇄ Transfer in / out on every row.** One sheet per part: transfer **IN** from donor sets, unbuilt sets or **Loose / PAB buys** (exact colour first — green-edged — then other colours; **→1** / **→ all**), and transfer **OUT** (**⇠1** / **⇠ all** sends pieces back where they came from). The old dedicated **+ Add parts** / **⇠ Return parts** pages and the bottom per-source listing are gone.
+- **Loose / PAB parts are a source now.** Parts itemised on a Loose buy show as `N in PAB` on a MOC row and transfer in/out like set parts, with the buy remembered as the piece's home.
+- **Have = manual + ♻️ transferred + 🛒 bought.** The stepper adjusts the manual count only; transferred pieces and want-list purchases are its floor (release them via ⇄), the plan qty its ceiling.
+- **Nothing gets stranded.** Transferred pieces the plan doesn't mention (pre-redesign data, or after clearing the list) appear under **♻️ Transferred — not in the parts list**, with one-tap **＋** add-to-plan and **⇠ all** return.
+- **Set-style extras**: status badges + completion ring in the header card, filter / Hide have / Group: Colour ↔ Type chips, sticky batch bar (Mark N as have / not have · 🛒 push shortfalls to a want list), **Add missing to want list (N pcs)**, and the tiny `+1 → x/y` just-changed hint.
+
+-----
+
 ## v0.64.0 — 2026-07-25
 
 **Hunting a MOC part now matches the colour you actually need.**
