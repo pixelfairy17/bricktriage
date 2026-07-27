@@ -15,7 +15,8 @@ Collaboration guide for **Cowork** (SPEC + HTML prototype + deploy) and **Claude
 - ⚠️ **Repo is public now** → this **reverses** the old "commit data backups for history"
   plan. Backups contain the key + photos; **never commit them.** History/rollback covers the
   *app code* (`index.html`), not data.
-- Deploy loop: branch → PR → e taps **Merge** → Pages auto-rebuilds → reload on phone.
+- Deploy loop: branch → PR → **Claude merges** → Pages auto-rebuilds → reload on phone.
+  (e, 2026-07-27: "Always merge" — Claude merges its own PRs without waiting for e.)
 
 ## What this is
 
@@ -78,7 +79,8 @@ docs/design/archive simply haven't been added). Don't assume they exist in a fre
 - **Live: https://pixelfairy17.github.io/bricktriage/** — GitHub Pages, **public repo**, serving
   `main` / root. (Was Netlify Drop; went public 2026-06-15 because free Pages requires it.)
 - Deploy = land the current HTML on `main`; Pages auto-rebuilds (the "pages build and deployment"
-  workflow runs itself, ~1 min). Normal loop: branch → PR → e taps **Merge**.
+  workflow runs itself, ~1 min). Normal loop: branch → PR → **Claude merges** (standing rule from e,
+  2026-07-27: "Always merge").
 - **Code rollback ("if something breaks") = `git revert` / redeploy a previous commit.** This
   is the safety net — every deploy is a traceable commit.
 - After each deploy on iPhone: **delete the Home-Screen icon and re-add it** (iOS caches the
