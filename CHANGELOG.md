@@ -9,6 +9,16 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.66.0 — 2026-08-29
+
+**↻ Bulk: the number field keeps the keyboard between sets.**
+
+- **No more keyboard collapse.** Tapping **＋ Add** used to blur the set-number input, which tears the iOS keyboard down — so every set in a lot cost an extra tap to get the field back. The button no longer steals focus, and the field is re-focused after each add: **type → ＋ → type → ＋** straight down a pile of boxes.
+- **Straight into the field.** Tapping the **↻ Bulk** chip now focuses the number input and opens the keyboard.
+- **Feedback where you're looking.** A **`N queued`** count sits beside the *Set numbers* label, and each add confirms **`✓ 75281 queued`** directly under the field — no scrolling down to the queue list to check the number landed. Pasting several at once reports `✓ 4 numbers queued`.
+
+Nothing about fetching changed: numbers still only queue, and the queue still runs on **Fetch + save N sets**.
+
 ## v0.65.0 — 2026-07-27
 
 **MOC page rebuilt from scratch — it now works like a set.**
