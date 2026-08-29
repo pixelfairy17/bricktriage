@@ -96,8 +96,13 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.65.0";
+const APP_VERSION = "0.66.0";
 const CHANGELOG = [
+  ["0.66.0", "2026-08-29", [
+    "\u21bb Bulk rapid entry: the set-number field no longer loses focus when you tap \uff0b Add, so the keyboard stays up between sets. Type \u2192 \uff0b \u2192 type \u2192 \uff0b straight down a pile of boxes without re-tapping the field for every number.",
+    "Tapping the \u21bb Bulk chip now drops you straight into the number field with the keyboard open.",
+    "Live feedback while queueing: a \u201cN queued\u201d count sits beside the Set numbers label, and each add confirms \u201c\u2713 75281 queued\u201d under the field \u2014 no scrolling down to the queue to check it landed.",
+  ]],
   ["0.65.0", "2026-07-27", [
     "MOC page redesigned from scratch — it now works like a set's page. Two connected lists: the ✎ PARTS LIST (the plan — its own editor page for adding, importing and qty-editing what the build needs) and the BUILD tracker (read-only rows derived from the plan, logged exactly like a set: − / + steps the qty you HAVE, tap the name to toggle full, green when done).",
     "Every tracker row gets a ⇄ transfer button: transfer pieces IN from donor sets, unbuilt sets or Loose/PAB buys (exact colour first, other colours below, →1 / → all), and transfer OUT (⇠1 / ⇠ all sends them back where they came from). The old dedicated '+ Add parts' / '⇠ Return parts' pages and the bottom source-set listing are gone.",
@@ -3763,6 +3768,10 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   const [err, setErr] = useState("");
   const [dup, setDup] = useState(null); // already-tracked set number
   const [fetched, setFetched] = useState(null); // {meta, parts}
+  // v0.66: ↻ Bulk rapid entry — the number field keeps focus (and the keyboard) across adds, so
+  // it's type → ＋ → type → ＋ without the keyboard collapsing between every set.
+  const numRef = useRef(null);
+  const [lastQueued, setLastQueued] = useState(""); // inline "✓ 75281 queued" under the field
   const [buyIds, setBuyIds] = useState(() => prefBuy ? [prefBuy.id] : lastBuy ? [lastBuy.id] : []);
   const [scan, setScan] = useState(false);
   const [scanPart, setScanPart] = useState(null); // scan returned a PART, not a set
@@ -3801,6 +3810,9 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     const q = m !== "normal", b = m === "bulk";
     setQuickRaw(q); save("bt:quickadd", q);
     setBulkModeRaw(b); save("bt:bulkadd", b);
+    setLastQueued("");
+    // tapping ↻ Bulk is a user gesture, so focusing here legitimately opens the keyboard on iOS
+    if (b) setTimeout(() => numRef.current?.focus(), 0);
   };
   const [savedMsg, setSavedMsg] = useState("");
   // v0.61: ↻ Bulk — type/scan every set number FIRST, then fetch + save the whole list in one run.
@@ -3842,6 +3854,10 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
       return [...next, ...add];
     });
     setNumRaw("");
+    setLastQueued(nums.length === 1 ? nums[0] : `${nums.length} numbers`);
+    // stay in the field: iOS tears the keyboard down the moment the input blurs, and re-tapping
+    // it for every set was the whole friction. Refocus even if something did steal focus.
+    numRef.current?.focus();
   };
   const takeSetNum = num => { if (mode === "bulk") queueAdd(num); else { setNumRaw(num); go(num); } };
 
@@ -3891,7 +3907,7 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     if (!key) { setErr("Add your Rebrickable key in Settings first."); return; }
     const rows = queue.filter(r => r.status === "pending" || r.status === "error");
     if (!rows.length) return;
-    setErr(""); setSavedMsg(""); setDup(null); setBusy(true);
+    setErr(""); setSavedMsg(""); setDup(null); setLastQueued(""); setBusy(true);
     const tracked = new Set(existing); // grows as the run saves, so a repeat in the list is caught
     let saved = 0, copied = 0, skipped = 0, failed = 0;
     for (let i = 0; i < rows.length; i++) {
@@ -4003,16 +4019,25 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
         </div>`}
       </div>
       <div class="card">
-        <${Label}>Set number${mode === "bulk" ? "s" : ""}</${Label}>
+        <div class="row" style="justify-content:space-between;align-items:baseline">
+          <${Label}>Set number${mode === "bulk" ? "s" : ""}</${Label}>
+          ${mode === "bulk" && queue.length > 0 && html`<span style="font-size:12px;font-weight:700;color:var(--purple);flex-shrink:0">${queue.length} queued</span>`}
+        </div>
         ${mode === "bulk" ? html`
           <div class="row" style="gap:8px">
-            <input style="flex:1;min-width:0" inputmode="numeric" placeholder="e.g. 75281 — paste several too" value=${numRaw}
-              onInput=${e => setNumRaw(e.target.value)}
+            <input ref=${numRef} style="flex:1;min-width:0" inputmode="numeric" enterkeyhint="done"
+              autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck=${false}
+              placeholder="e.g. 75281 — paste several too" value=${numRaw}
+              onInput=${e => { setNumRaw(e.target.value); if (lastQueued) setLastQueued(""); }}
               onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); queueAdd(numRaw); } }} />
+            ${/* v0.66: preventDefault on pointerdown keeps focus (and the iOS keyboard) on the input —
+                  a plain button steals focus on tap, which tore the keyboard down after every set. */ ""}
             <button class="btn" style="width:auto;flex-shrink:0;padding:13px 14px" disabled=${!numRaw.trim()}
-              onClick=${() => queueAdd(numRaw)}>＋ Add</button>
+              onPointerDown=${e => e.preventDefault()} onClick=${() => queueAdd(numRaw)}>＋ Add</button>
           </div>
-          <div class="dim" style="font-size:12px;margin-top:6px">Enter (or ＋ Add) queues the number — nothing is fetched until you tap the button below.</div>
+          ${lastQueued
+            ? html`<div style="font-size:12px;margin-top:6px;color:var(--green);font-weight:700">✓ ${lastQueued} queued — keep typing, the field stays open.</div>`
+            : html`<div class="dim" style="font-size:12px;margin-top:6px">＋ Add (or Enter) queues the number and keeps the keyboard up — nothing is fetched until you tap the button below.</div>`}
           <div style="height:10px"></div>
           <button class="ghost" disabled=${busy} onClick=${() => setScan(true)}>📷 Scan box / instructions / model → queue</button>
         ` : html`
@@ -4034,7 +4059,7 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
             ${doneCount > 0 && !busy && html`<button class="chip" style="border-color:var(--line);color:var(--dim)"
               onClick=${() => setQueue(q => q.filter(r => r.status === "pending" || r.status === "error"))}>Clear done</button>`}
             ${!busy && html`<button class="chip" style="border-color:var(--line);color:var(--dim)"
-              onClick=${() => { setQueue([]); setSavedMsg(""); }}>Clear all</button>`}
+              onClick=${() => { setQueue([]); setSavedMsg(""); setLastQueued(""); }}>Clear all</button>`}
           </span>
         </div>
         ${queue.map(r => {
