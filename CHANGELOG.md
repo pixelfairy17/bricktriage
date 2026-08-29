@@ -9,6 +9,16 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.68.0 — 2026-08-29
+
+**↻ Bulk processes as you type, and books are marked from the queue.**
+
+- **⚙︎ Process as I add** (on by default). Each number is fetched and saved the moment you add it — one row at a time in the background, never in parallel, since Rebrickable is rate-limited and each set is several paged requests. You keep typing while the list fills in down the page. A live tally replaces the end-of-run summary: `4 saved · 2 skipped · 1 failed · 📖 5 books marked`. Turn it off to go back to queue-first with the **Fetch + save N** button.
+- **📖 Per-booklet chips on every processed row.** `📖1 📖2 📖3` — grey means you don't have it, tap to turn it green, written straight onto the set record. **＋** declares another book. Rebrickable publishes nothing about instructions, so the number of booklets a set shipped with **cannot be fetched** — ＋ is how you tell it. Removing the last book drops the set back to *no instructions*.
+- **↻ Retry per row**, so a timed-out fetch doesn't mean retyping the number, plus **↻ Retry N failed** for the whole batch. (The 15s request timeout already existed; there was just no way to re-run the row.)
+- Rows can now be deleted while other rows are still fetching — only the row actually in flight is locked, and **Clear all / Clear done** leave it alone.
+- A warning shows if "process as I add" is on with no buy linked, since sets now save the instant they're typed rather than at a run you trigger deliberately.
+
 ## v0.67.0 — 2026-08-29
 
 **↻ Bulk: 📖 Adding from instruction books.**
