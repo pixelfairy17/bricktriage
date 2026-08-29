@@ -9,6 +9,17 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.70.0 — 2026-08-29
+
+**↻ Bulk: the page stops jumping when you tap ＋ Add.**
+
+The field kept focus from v0.66, but the *view* still moved under it. Two separate causes, both fixed:
+
+- **Layout shift.** Adding a row changes the page around the input — most sharply on the **first** add, where the settings cards collapse and pull everything above the field up by ~32px. The number field is now pinned: its on-screen position is measured before each add and restored immediately after, so the queue grows beneath it while your typing spot stays put. Held for a few frames afterwards as well, because iOS scrolls the focused field on its own schedule once the keyboard is up.
+- **`focus()` scrolling.** Calling `focus()` makes the browser scroll the element into view — a second jump, landing right after the layout had just changed. Now uses `preventScroll`, and only re-focuses if focus actually moved.
+
+Measured at a 390×420 viewport (roughly what's left with an iOS keyboard up): the field previously moved 32px on the first add and now holds position to within a pixel across single adds, pasted batches, and from a scrolled starting point.
+
 ## v0.69.0 — 2026-08-29
 
 **Sort by set number.**
