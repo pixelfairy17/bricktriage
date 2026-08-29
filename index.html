@@ -86,7 +86,7 @@ function btBootErr(msg){
 </script>
 <script type="module">
 import { h, render } from "https://esm.sh/preact@10.19.3";
-import { useState, useEffect, useMemo, useRef, useCallback } from "https://esm.sh/preact@10.19.3/hooks";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "https://esm.sh/preact@10.19.3/hooks";
 import htm from "https://esm.sh/htm@3.1.1";
 import { createPortal } from "https://esm.sh/preact@10.19.3/compat";
 import { get as idbGet, set as idbSet, del as idbDelete, keys as idbKeys, getMany as idbGetMany, setMany as idbSetMany, createStore } from "https://esm.sh/idb-keyval@6.2.1";
@@ -96,8 +96,12 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.69.0";
+const APP_VERSION = "0.70.0";
 const CHANGELOG = [
+  ["0.70.0", "2026-08-29", [
+    "\u21bb Bulk: the page no longer jumps when you tap \uff0b Add. The field kept focus (v0.66) but the view still shifted under it \u2014 worst on the first add, where the settings cards collapse and pull everything up ~32px. The number field is now pinned: its on-screen position is measured before each add and restored after, so the list grows beneath it while your typing spot stays exactly where it was.",
+    "Held for a few frames afterwards too, since iOS scrolls the focused field on its own schedule once the keyboard is up. focus() also no longer scrolls the field into view (preventScroll) \u2014 it was a second, separate source of the same jump.",
+  ]],
   ["0.69.0", "2026-08-29", [
     "Sort by SET NUMBER. New \u201cSet #\u201d option in the sets list sort cycle (Newest \u2192 Completion \u2192 Value \u2192 Recent part \u2192 Set # \u2192 \u2026), and it flows into every view \u2014 flat, by buy, by theme, by condition \u2014 since they all order off the same list.",
     "Also on a buy's own set list (\u2193 Newest \u2192 \u2193 Completion \u2192 \u2191 Set #) and in \uff0b Link existing set, where you're searching by number anyway.",
@@ -3833,6 +3837,28 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   const setAutoRun = v => { setAutoRunRaw(v); save("bt:bulkauto", v); };
   const drainRef = useRef(false);
   const [tick, setTick] = useState(0); // booklet edits live in storage, not state — force a repaint
+  // v0.70: keep the number field visually STILL across an add. Adding a row changes the layout
+  // around it — most sharply on the first one, where the settings cards collapse — and both the
+  // browser's focus handling and iOS keyboard avoidance then yank the page mid-typing. Record
+  // where the field sits before the change, put it back after.
+  const anchorRef = useRef(null);
+  const anchorField = () => { anchorRef.current = numRef.current?.getBoundingClientRect().top ?? null; };
+  // Re-assert over the next few frames as well: iOS's keyboard avoidance can scroll the focused
+  // field on its own schedule, after our layout pass has already run.
+  const holdAnchor = (target, frames) => {
+    const el = numRef.current;
+    if (!el || target == null) return;
+    const sc = el.closest(".content");
+    if (!sc) return;
+    const delta = el.getBoundingClientRect().top - target;
+    if (Math.abs(delta) > 0.5) sc.scrollTop += delta;
+    if (frames > 0) requestAnimationFrame(() => holdAnchor(target, frames - 1));
+  };
+  useLayoutEffect(() => {
+    const was = anchorRef.current;
+    anchorRef.current = null;
+    if (was != null) holdAnchor(was, 3);
+  });
   const [buyIds, setBuyIds] = useState(() => prefBuy ? [prefBuy.id] : lastBuy ? [lastBuy.id] : []);
   const [scan, setScan] = useState(false);
   const [scanPart, setScanPart] = useState(null); // scan returned a PART, not a set
@@ -3873,7 +3899,7 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     setBulkModeRaw(b); save("bt:bulkadd", b);
     setLastQueued("");
     // tapping ↻ Bulk is a user gesture, so focusing here legitimately opens the keyboard on iOS
-    if (b) setTimeout(() => numRef.current?.focus(), 0);
+    if (b) setTimeout(() => numRef.current?.focus({ preventScroll: true }), 0);
   };
   // 📖 book mode is a ↻ Bulk thing only — never let it apply invisibly from another mode
   const booksOn = mode === "bulk" && books;
@@ -3905,6 +3931,7 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   const queueAdd = raw => {
     const nums = String(raw).split(/[\s,;]+/).map(s => s.trim()).filter(Boolean).map(normSetNum);
     if (!nums.length) return;
+    anchorField();
     setErr(""); setSavedMsg(""); setDup(null);
     setQueue(q => {
       const want = new Set(nums);
@@ -3919,8 +3946,9 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     setNumRaw("");
     setLastQueued(nums.length === 1 ? nums[0] : `${nums.length} numbers`);
     // stay in the field: iOS tears the keyboard down the moment the input blurs, and re-tapping
-    // it for every set was the whole friction. Refocus even if something did steal focus.
-    numRef.current?.focus();
+    // it for every set was the whole friction. preventScroll because focus() otherwise scrolls
+    // the field into view — which is itself a jump when the layout just changed underneath it.
+    if (document.activeElement !== numRef.current) numRef.current?.focus({ preventScroll: true });
   };
   const takeSetNum = num => { if (mode === "bulk") queueAdd(num); else { setNumRaw(num); go(num); } };
 
