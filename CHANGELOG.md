@@ -9,6 +9,17 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.67.0 — 2026-08-29
+
+**↻ Bulk: 📖 Adding from instruction books.**
+
+- **Mark the books as you queue them.** A toggle in ↻ Bulk: when it's on, every number you queue saves with its instructions already set to **Book ×1**, because you're reading the number off the booklet in your hand. Pick the condition once (**Poor / Good / Excellent**) and it applies to the whole run — instead of going back through the buy and ticking each set individually.
+- **Works on sets you already track.** This is the case that used to cost the most digging: a duplicate number that gets **skipped** (or logged as another copy) *still* records the booklet you're holding. The queue row says `already tracked · 📖 book marked`.
+- **Upgrade-only, never destructive.** A set that already has instructions logged — any kind, including a hand-entered multi-book count and per-book conditions — is left exactly as it is. Receipt-linked sets keep their `Book / Excellent` from the new-purchase autofill rather than being flattened to the batch condition.
+- **Counted in the summary:** `4 saved · 2 skipped · 📖 6 books marked`.
+
+Multi-booklet sets are marked as a single book; set the real count on the set's Instructions panel (Rebrickable exposes nothing about instructions, so it can't be looked up).
+
 ## v0.66.0 — 2026-08-29
 
 **↻ Bulk: the number field keeps the keyboard between sets.**
