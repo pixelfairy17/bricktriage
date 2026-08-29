@@ -250,6 +250,18 @@ Brickognize author permission.
 - Part rate keyword map + colour bucket map: refine both from real-bulk use.
 - Quick-add edge: “last added to” ranks by set add date, not link time — does relinking
   old sets ever need to promote a buy? Watch in practice.
+- **PARKED (e, 2026-08-29) — live OCR of set numbers off instruction-booklet covers.**
+  Continuous camera in ↻ Bulk: point at each booklet in the stack, the printed set number is
+  read and queued automatically with a running count, tap Finish. NOT box barcodes (EAN/UPC has
+  no set-number lookup in Rebrickable v3) and NOT boxes (glossy, angled, stylised) — the target
+  is the number printed on the cover of an instruction booklet: flat matte paper, consistent
+  placement, high contrast, large type, which is a far more tractable OCR target.
+  Feasible: WebKit ships no BarcodeDetector/TextDetector, so it needs a WASM OCR dependency
+  (Tesseract.js, digit whitelist, single-line page-seg) at a few MB, run on a cropped reticle
+  every ~700ms with a stability check (same number read twice before accepting). Feeds the
+  existing ↻ Bulk queue, which is reviewed before fetch — so a misread is a tap to delete,
+  not bad data. Revisit after the HTML workflow settles; on native, Vision framework does this
+  properly with no dependency.
 
 ## Non-goals (v1)
 
