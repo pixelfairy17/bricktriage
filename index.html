@@ -96,8 +96,13 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.66.0";
+const APP_VERSION = "0.67.0";
 const CHANGELOG = [
+  ["0.67.0", "2026-08-29", [
+    "\u21bb Bulk gains \ud83d\udcd6 Adding from instruction books. Turn it on when you're working through a stack of booklets and every set queued saves with its instructions already marked Book \u00d71 \u2014 no going back through the buy to tick them off one by one. Pick the condition once (Poor / Good / Excellent) and it applies to the whole run.",
+    "It also marks books on sets you ALREADY track: a duplicate number that gets skipped (or logged as another copy) still records the booklet you're holding, which is the case that used to cost the most digging. The row says \u201calready tracked \u00b7 \ud83d\udcd6 book marked\u201d.",
+    "Upgrade-only \u2014 a set that already has instructions logged is never touched, so hand-entered book counts and conditions survive. The run summary counts them: \u201c4 saved \u00b7 2 skipped \u00b7 \ud83d\udcd6 6 books marked\u201d.",
+  ]],
   ["0.66.0", "2026-08-29", [
     "\u21bb Bulk rapid entry: the set-number field no longer loses focus when you tap \uff0b Add, so the keyboard stays up between sets. Type \u2192 \uff0b \u2192 type \u2192 \uff0b straight down a pile of boxes without re-tapping the field for every number.",
     "Tapping the \u21bb Bulk chip now drops you straight into the number field with the keyboard open.",
@@ -544,6 +549,17 @@ const applyNewAutofill = r => {
   r.box = { has: true, cond: "excellent", note: (r.box?.note || "") };
   r.triage = "keep";
   return r;
+};
+// v0.67: mark a record as HAVING its paper instructions — used by ↻ Bulk's 📖 book mode, where
+// every number is being read off a booklet you're holding. Only ever upgrades: a set that already
+// records instructions (any kind) is left exactly as it is, so a real per-book condition/count
+// entered by hand is never flattened. Returns true if it actually changed something.
+const markBookHave = (r, cond) => {
+  if (r.instructions && r.instructions !== "none") return false;
+  r.instructions = "paper";
+  r.bookCount = Math.max(r.bookCount || 0, 1);
+  if (!(r.booklets || []).length) r.booklets = [{ id: String(Date.now()) + "-b1", book: 1, cond: cond || "good", note: "" }];
+  return true;
 };
 const condColor = c => c === "excellent" ? "var(--green)" : c === "poor" ? "var(--red)" : "var(--yellow)";
 const condLabel = c => (CONDITIONS.find(x => x[0] === c) || CONDITIONS[1])[1];
@@ -1184,8 +1200,8 @@ function remainingStats(rec) {
   const parted = Math.max(0, had - remDisp);
   return { needed, remaining: remDisp, parted, missing, had };
 }
-const Chip = ({ label, color, active, onClick }) => html`
-  <button class="chip" onClick=${onClick}
+const Chip = ({ label, color, active, onClick, onPointerDown }) => html`
+  <button class="chip" onClick=${onClick} onPointerDown=${onPointerDown}
     style=${`border-color:${color};color:${active ? "#1C1A17" : color};background:${active ? color : "transparent"}`}>
     ${label}
   </button>`;
@@ -3772,6 +3788,13 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   // it's type → ＋ → type → ＋ without the keyboard collapsing between every set.
   const numRef = useRef(null);
   const [lastQueued, setLastQueued] = useState(""); // inline "✓ 75281 queued" under the field
+  // v0.67: 📖 book mode — you're working through a stack of instruction booklets, so every number
+  // you queue is a set you demonstrably HAVE the book for. Saves the whole run with instructions
+  // marked, instead of opening each set afterwards to tick it. Persisted across sessions.
+  const [books, setBooksRaw] = useState(() => load("bt:bulkbooks", false));
+  const setBooks = v => { setBooksRaw(v); save("bt:bulkbooks", v); };
+  const [bookCond, setBookCondRaw] = useState(() => load("bt:bulkbookcond", "good"));
+  const setBookCond = v => { setBookCondRaw(v); save("bt:bulkbookcond", v); };
   const [buyIds, setBuyIds] = useState(() => prefBuy ? [prefBuy.id] : lastBuy ? [lastBuy.id] : []);
   const [scan, setScan] = useState(false);
   const [scanPart, setScanPart] = useState(null); // scan returned a PART, not a set
@@ -3814,6 +3837,8 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     // tapping ↻ Bulk is a user gesture, so focusing here legitimately opens the keyboard on iOS
     if (b) setTimeout(() => numRef.current?.focus(), 0);
   };
+  // 📖 book mode is a ↻ Bulk thing only — never let it apply invisibly from another mode
+  const booksOn = mode === "bulk" && books;
   const [savedMsg, setSavedMsg] = useState("");
   // v0.61: ↻ Bulk — type/scan every set number FIRST, then fetch + save the whole list in one run.
   // [{num, status: pending|busy|saved|copied|skipped|error, msg, dupAction: skip|copy}]
@@ -3879,7 +3904,20 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     const rec = { ...r.meta, instructions: "none", triage: "undecided", condition: cond,
       built: false, pricePaid: 0, rrp: 0, box: { has: false, cond: "good", note: "" },
       buyIds: [...buyIds], notes: "", dateAdded: Date.now(), parts: r.parts, minifigs: r.minifigs || [] };
-    return cond === "new" ? applyNewAutofill(rec) : rec;
+    const out = cond === "new" ? applyNewAutofill(rec) : rec;
+    // a receipt-linked set is already 📖 Book/Excellent via the new-autofill; markBookHave only
+    // fills the gap, so book mode never downgrades that to the batch condition
+    if (booksOn) markBookHave(out, bookCond);
+    return out;
+  };
+
+  // book mode over a set that's ALREADY tracked: the booklet in your hand is new information even
+  // when the set isn't, so mark it whether the row ends up copied or skipped. Upgrade-only.
+  const markBookOnStored = setNum => {
+    const rec = structuredClone(load(`bt:set:${setNum}`, null));
+    if (!rec || !markBookHave(rec, bookCond)) return false;
+    persistSet(rec);
+    return true;
   };
 
   async function go(raw) {
@@ -3909,15 +3947,22 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     if (!rows.length) return;
     setErr(""); setSavedMsg(""); setDup(null); setLastQueued(""); setBusy(true);
     const tracked = new Set(existing); // grows as the run saves, so a repeat in the list is caught
-    let saved = 0, copied = 0, skipped = 0, failed = 0;
+    let saved = 0, copied = 0, skipped = 0, failed = 0, booked = 0;
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i], pos = `${i + 1}/${rows.length}`;
       if (tracked.has(row.num)) {
         if (row.dupAction === "copy" && buyIds.length) {
           const msg = addCopyOf(row.num);
-          if (msg) { copied++; queuePatch(row.num, { status: "copied", msg: `another copy → ${msg}` }); }
-          else { failed++; queuePatch(row.num, { status: "error", msg: "record missing from storage" }); }
-        } else { skipped++; queuePatch(row.num, { status: "skipped", msg: "already tracked" }); }
+          if (msg) {
+            copied++;
+            const b = booksOn && markBookOnStored(row.num); if (b) booked++;
+            queuePatch(row.num, { status: "copied", msg: `another copy → ${msg}${b ? " · 📖 book marked" : ""}` });
+          } else { failed++; queuePatch(row.num, { status: "error", msg: "record missing from storage" }); }
+        } else {
+          skipped++;
+          const b = booksOn && markBookOnStored(row.num); if (b) booked++;
+          queuePatch(row.num, { status: "skipped", msg: b ? "already tracked · 📖 book marked" : "already tracked" });
+        }
         continue;
       }
       queuePatch(row.num, { status: "busy", msg: "" });
@@ -3925,8 +3970,8 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
       try {
         const r = await fetchFullSet(row.num, m => setProgress(`${pos} · ${row.num} — ${m}`));
         onQuickSave(buildRec(r), true);
-        tracked.add(row.num); saved++;
-        queuePatch(row.num, { status: "saved", msg: r.meta.name });
+        tracked.add(row.num); saved++; if (booksOn) booked++;
+        queuePatch(row.num, { status: "saved", msg: `${r.meta.name}${booksOn ? " · 📖" : ""}` });
       } catch (e) { failed++; queuePatch(row.num, { status: "error", msg: e.message || String(e) }); }
     }
     setBusy(false); setProgress("");
@@ -3935,6 +3980,7 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     if (copied) bits.push(`${copied} extra cop${copied === 1 ? "y" : "ies"}`);
     if (skipped) bits.push(`${skipped} skipped`);
     if (failed) bits.push(`${failed} failed`);
+    if (booked) bits.push(`📖 ${booked} book${booked === 1 ? "" : "s"} marked`);
     setSavedMsg(`${bits.join(" · ")}${linked.length ? " → " + linked.map(b => b.label).join(" + ") : ""}`);
   }
 
@@ -4023,6 +4069,22 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
           <${Label}>Set number${mode === "bulk" ? "s" : ""}</${Label}>
           ${mode === "bulk" && queue.length > 0 && html`<span style="font-size:12px;font-weight:700;color:var(--purple);flex-shrink:0">${queue.length} queued</span>`}
         </div>
+        ${mode === "bulk" && html`<div style=${`border:1px solid ${books ? "var(--blue)" : "var(--line)"};border-radius:10px;padding:9px 10px;margin-bottom:10px`}>
+          <button class="row" onClick=${() => setBooks(!books)} onPointerDown=${e => e.preventDefault()}
+            style="width:100%;background:transparent;border:none;padding:0;color:var(--text);justify-content:space-between;text-align:left;gap:10px">
+            <span style="font-weight:700;font-size:13px;min-width:0">📖 Adding from instruction books</span>
+            <span style=${`flex-shrink:0;font-weight:800;font-size:12px;color:${books ? "var(--blue)" : "var(--dim)"}`}>${books ? "ON" : "OFF"}</span>
+          </button>
+          ${books ? html`
+            <div class="dim" style="font-size:12px;margin-top:6px">Every number queued here saves with its instructions marked <b style="color:var(--blue)">Book ×1</b> — including numbers you already track, so a book you've just found gets recorded without opening the set. Never overwrites books already logged.</div>
+            <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+              <span class="dim" style="font-size:12px">Condition:</span>
+              ${CONDITIONS.map(([id, label]) => html`<${Chip} key=${id} label=${label} color=${condColor(id)}
+                active=${bookCond === id} onPointerDown=${e => e.preventDefault()} onClick=${() => setBookCond(id)} />`)}
+            </div>
+            <div class="dim" style="font-size:11px;margin-top:7px">Multi-booklet sets are marked as one book — set the real count on the set's Instructions panel.</div>
+          ` : html`<div class="dim" style="font-size:12px;margin-top:4px">Turn on when you're reading numbers off a stack of booklets.</div>`}
+        </div>`}
         ${mode === "bulk" ? html`
           <div class="row" style="gap:8px">
             <input ref=${numRef} style="flex:1;min-width:0" inputmode="numeric" enterkeyhint="done"
@@ -4070,7 +4132,7 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
               <div class="mono ellip" style="font-weight:700;font-size:13px">${r.num}</div>
               ${isDup ? html`
                 <div style="font-size:11px;color:var(--yellow);font-weight:700">Already tracked in ${trackedIn(r.num)}</div>
-                <div class="dim" style="font-size:11px">${r.dupAction === "copy" ? "→ log another copy here" : "→ will be skipped"}</div>
+                <div class="dim" style="font-size:11px">${r.dupAction === "copy" ? "→ log another copy here" : "→ will be skipped"}${booksOn ? " · 📖 book marked" : ""}</div>
               ` : r.msg && html`<div class="dim ellip" style="font-size:11px">${r.msg}</div>`}
             </div>
             ${isDup && buyIds.length > 0 && html`<button class="chip" style=${`flex-shrink:0;border-color:${r.dupAction === "copy" ? "var(--green)" : "var(--line)"};color:${r.dupAction === "copy" ? "var(--green)" : "var(--dim)"}`}
