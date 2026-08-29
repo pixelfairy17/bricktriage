@@ -96,8 +96,13 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.67.0";
+const APP_VERSION = "0.68.0";
 const CHANGELOG = [
+  ["0.68.0", "2026-08-29", [
+    "\u21bb Bulk now processes as you type. \u2699\ufe0e Process as I add (on by default) fetches and saves each number the moment you add it \u2014 one at a time, in the background \u2014 while you keep typing the next. The list fills in down the page instead of waiting for one big run at the end; a live tally shows saved / skipped / failed as it goes.",
+    "\ud83d\udcd6 Per-booklet chips on every processed row: \ud83d\udcd61 \ud83d\udcd62 \ud83d\udcd63 \u2014 grey for don't have, tap to go green for have, recorded straight onto the set. \uff0b adds another book. Rebrickable publishes nothing about instructions, so the book count can't be looked up \u2014 \uff0b is how you declare it.",
+    "\u21bb Retry on any row that failed (a timed-out fetch no longer means retyping the number), plus \u201c\u21bb Retry N failed\u201d for the lot. Rows can be deleted while other rows are still fetching \u2014 only the row actually in flight is locked.",
+  ]],
   ["0.67.0", "2026-08-29", [
     "\u21bb Bulk gains \ud83d\udcd6 Adding from instruction books. Turn it on when you're working through a stack of booklets and every set queued saves with its instructions already marked Book \u00d71 \u2014 no going back through the buy to tick them off one by one. Pick the condition once (Poor / Good / Excellent) and it applies to the whole run.",
     "It also marks books on sets you ALREADY track: a duplicate number that gets skipped (or logged as another copy) still records the booklet you're holding, which is the case that used to cost the most digging. The row says \u201calready tracked \u00b7 \ud83d\udcd6 book marked\u201d.",
@@ -3795,6 +3800,13 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   const setBooks = v => { setBooksRaw(v); save("bt:bulkbooks", v); };
   const [bookCond, setBookCondRaw] = useState(() => load("bt:bulkbookcond", "good"));
   const setBookCond = v => { setBookCondRaw(v); save("bt:bulkbookcond", v); };
+  // v0.68: process each queued number as it's typed, instead of waiting for one big run at the end.
+  // A single row is worked at a time (never parallel — Rebrickable is rate-limited and each set is
+  // several paged requests); drainRef is the mutex, the queue itself is the work list.
+  const [autoRun, setAutoRunRaw] = useState(() => load("bt:bulkauto", true));
+  const setAutoRun = v => { setAutoRunRaw(v); save("bt:bulkauto", v); };
+  const drainRef = useRef(false);
+  const [tick, setTick] = useState(0); // booklet edits live in storage, not state — force a repaint
   const [buyIds, setBuyIds] = useState(() => prefBuy ? [prefBuy.id] : lastBuy ? [lastBuy.id] : []);
   const [scan, setScan] = useState(false);
   const [scanPart, setScanPart] = useState(null); // scan returned a PART, not a set
@@ -3940,48 +3952,60 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
     setBusy(false); setProgress("");
   }
 
-  // fetch + save every queued number in order, then report a per-row + overall result
+  // Work ONE queued row to completion. Shared by the auto-pump and the manual run button so both
+  // behave identically. Always lands the row on a terminal status — a row left "pending" after a
+  // throw would stall the pump, which has nothing else to wake it.
+  async function processRow(row, extraTracked) {
+    const tracked = new Set([...existing, ...(extraTracked || [])]);
+    if (tracked.has(row.num)) {
+      if (row.dupAction === "copy" && buyIds.length) {
+        const msg = addCopyOf(row.num);
+        if (!msg) { queuePatch(row.num, { status: "error", msg: "record missing from storage" }); return; }
+        const b = booksOn && markBookOnStored(row.num);
+        queuePatch(row.num, { status: "copied", book: !!b, msg: `another copy → ${msg}` });
+      } else {
+        const b = booksOn && markBookOnStored(row.num);
+        queuePatch(row.num, { status: "skipped", book: !!b, msg: b ? "already tracked · 📖 book marked" : "already tracked" });
+      }
+      return;
+    }
+    queuePatch(row.num, { status: "busy", msg: "" });
+    try {
+      const r = await fetchFullSet(row.num, m => queuePatch(row.num, { msg: m }));
+      onQuickSave(buildRec(r), true);
+      queuePatch(row.num, { status: "saved", book: booksOn, msg: r.meta.name });
+    } catch (e) {
+      queuePatch(row.num, { status: "error", msg: e.message || String(e) });
+    }
+  }
+
+  // The pump: whenever a pending row exists and nothing is in flight, take the next one. Each
+  // completion writes the queue, which re-runs this effect and picks up the row after it — including
+  // numbers typed while an earlier one was still fetching.
+  useEffect(() => {
+    if (!autoRun || mode !== "bulk" || drainRef.current || !key) return;
+    const next = queue.find(r => r.status === "pending");
+    if (!next) return;
+    drainRef.current = true;
+    (async () => {
+      try { await processRow(next); } finally { drainRef.current = false; setTick(t => t + 1); }
+    })();
+  }, [queue, autoRun, mode, key, buyIds, booksOn, bookCond, tick]);
+
+  // Manual run — every pending/errored row in order. Used when "process as I add" is off.
   async function runQueue() {
     if (!key) { setErr("Add your Rebrickable key in Settings first."); return; }
     const rows = queue.filter(r => r.status === "pending" || r.status === "error");
-    if (!rows.length) return;
-    setErr(""); setSavedMsg(""); setDup(null); setLastQueued(""); setBusy(true);
-    const tracked = new Set(existing); // grows as the run saves, so a repeat in the list is caught
-    let saved = 0, copied = 0, skipped = 0, failed = 0, booked = 0;
+    if (!rows.length || drainRef.current) return;
+    setErr(""); setSavedMsg(""); setDup(null); setLastQueued("");
+    drainRef.current = true; setBusy(true);
+    const done = new Set();
     for (let i = 0; i < rows.length; i++) {
-      const row = rows[i], pos = `${i + 1}/${rows.length}`;
-      if (tracked.has(row.num)) {
-        if (row.dupAction === "copy" && buyIds.length) {
-          const msg = addCopyOf(row.num);
-          if (msg) {
-            copied++;
-            const b = booksOn && markBookOnStored(row.num); if (b) booked++;
-            queuePatch(row.num, { status: "copied", msg: `another copy → ${msg}${b ? " · 📖 book marked" : ""}` });
-          } else { failed++; queuePatch(row.num, { status: "error", msg: "record missing from storage" }); }
-        } else {
-          skipped++;
-          const b = booksOn && markBookOnStored(row.num); if (b) booked++;
-          queuePatch(row.num, { status: "skipped", msg: b ? "already tracked · 📖 book marked" : "already tracked" });
-        }
-        continue;
-      }
-      queuePatch(row.num, { status: "busy", msg: "" });
-      setProgress(`${pos} · ${row.num}`);
-      try {
-        const r = await fetchFullSet(row.num, m => setProgress(`${pos} · ${row.num} — ${m}`));
-        onQuickSave(buildRec(r), true);
-        tracked.add(row.num); saved++; if (booksOn) booked++;
-        queuePatch(row.num, { status: "saved", msg: `${r.meta.name}${booksOn ? " · 📖" : ""}` });
-      } catch (e) { failed++; queuePatch(row.num, { status: "error", msg: e.message || String(e) }); }
+      setProgress(`${i + 1}/${rows.length} · ${rows[i].num}`);
+      await processRow({ ...rows[i], status: "pending" }, done);
+      done.add(rows[i].num);
     }
-    setBusy(false); setProgress("");
-    const linked = buys.filter(b => buyIds.includes(b.id));
-    const bits = [`${saved} saved`];
-    if (copied) bits.push(`${copied} extra cop${copied === 1 ? "y" : "ies"}`);
-    if (skipped) bits.push(`${skipped} skipped`);
-    if (failed) bits.push(`${failed} failed`);
-    if (booked) bits.push(`📖 ${booked} book${booked === 1 ? "" : "s"} marked`);
-    setSavedMsg(`${bits.join(" · ")}${linked.length ? " → " + linked.map(b => b.label).join(" + ") : ""}`);
+    drainRef.current = false; setBusy(false); setProgress("");
   }
 
   // v0.59: the set is already tracked and e has ANOTHER physical copy — log +1 of it against the
@@ -4009,14 +4033,57 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
   const MODE_HINT = {
     normal: "Fetch, review, then save manually.",
     quick: `Fetch auto-saves, linked to the buys below, then returns to ${prefBuy ? "the buy" : "the sets list"}.`,
-    bulk: "Queue every set number first, then fetch + save the whole list into the buys below.",
+    bulk: autoRun ? "Type a number, tap ＋, keep going — each one is fetched and saved as you add it."
+      : "Queue every set number first, then fetch + save the whole list into the buys below.",
   };
   const FETCH_LABEL = { normal: "Fetch set + inventory", quick: "Fetch + save", bulk: "Fetch + save (stay)" };
+  // Rebrickable v3 carries nothing about instructions, so how many booklets a set shipped with
+  // can't be looked up — it's declared here by tapping ＋. Book 1 is assumed until told otherwise.
+  const bookInfo = setNum => {
+    const rec = load(`bt:set:${setNum}`, null);
+    if (!rec) return null;
+    const have = new Set((rec.booklets || []).map(b => b.book));
+    return { have, count: Math.max(rec.bookCount || 1, ...(have.size ? [...have] : [1]), 1) };
+  };
+  // toggle "I have booklet i" straight from the queue row, so a whole run can be marked up
+  // without opening a single set
+  const toggleBooklet = (setNum, i) => {
+    const rec = structuredClone(load(`bt:set:${setNum}`, null));
+    if (!rec) return;
+    const has = (rec.booklets || []).some(b => b.book === i);
+    rec.booklets = has ? (rec.booklets || []).filter(b => b.book !== i)
+      : [...(rec.booklets || []), { id: `${Date.now()}-b${i}`, book: i, cond: bookCond, note: "" }];
+    rec.bookCount = Math.max(rec.bookCount || 1, i);
+    // instructions follows the booklets: last one removed drops the set back to None
+    rec.instructions = rec.booklets.length ? "paper" : "none";
+    persistSet(rec);
+    setTick(t => t + 1);
+  };
+  const addBookSlot = setNum => {
+    const rec = structuredClone(load(`bt:set:${setNum}`, null));
+    if (!rec) return;
+    rec.bookCount = (bookInfo(setNum)?.count || 1) + 1;
+    persistSet(rec);
+    setTick(t => t + 1);
+  };
   const QUEUE_ICON = { pending: "•", busy: "⏳", saved: "✓", copied: "＋", skipped: "–", error: "✕" };
   const QUEUE_COLOR = { pending: "var(--dim)", busy: "var(--yellow)", saved: "var(--green)",
     copied: "var(--green)", skipped: "var(--dim)", error: "var(--red)" };
+  // once rows exist you're mid-run: drop the settings prose so the input stays reachable
+  const compact = queue.length > 0;
+  const qCount = st => queue.filter(r => r.status === st).length;
   const pendingCount = queue.filter(r => r.status === "pending" || r.status === "error").length;
   const doneCount = queue.length - pendingCount;
+  const errCount = qCount("error");
+  const workingCount = qCount("pending") + qCount("busy");
+  const bookedCount = queue.filter(r => r.book).length;
+  // live tally while the pump works, instead of one summary at the end of a batch
+  const liveBits = [];
+  if (qCount("saved")) liveBits.push(`${qCount("saved")} saved`);
+  if (qCount("copied")) liveBits.push(`${qCount("copied")} extra cop${qCount("copied") === 1 ? "y" : "ies"}`);
+  if (qCount("skipped")) liveBits.push(`${qCount("skipped")} skipped`);
+  if (errCount) liveBits.push(`${errCount} failed`);
+  if (bookedCount) liveBits.push(`📖 ${bookedCount} book${bookedCount === 1 ? "" : "s"} marked`);
   const MODE_ON = { normal: "background:var(--line);color:var(--text)",
     quick: "background:var(--yellow);color:#1C1A17", bulk: "background:var(--purple);color:#1C1A17" };
 
@@ -4069,6 +4136,17 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
           <${Label}>Set number${mode === "bulk" ? "s" : ""}</${Label}>
           ${mode === "bulk" && queue.length > 0 && html`<span style="font-size:12px;font-weight:700;color:var(--purple);flex-shrink:0">${queue.length} queued</span>`}
         </div>
+        ${mode === "bulk" && html`<div style=${`border:1px solid ${autoRun ? "var(--purple)" : "var(--line)"};border-radius:10px;padding:9px 10px;margin-bottom:8px`}>
+          <button class="row" onClick=${() => setAutoRun(!autoRun)} onPointerDown=${e => e.preventDefault()}
+            style="width:100%;background:transparent;border:none;padding:0;color:var(--text);justify-content:space-between;text-align:left;gap:10px">
+            <span style="font-weight:700;font-size:13px;min-width:0">⚙︎ Process as I add</span>
+            <span style=${`flex-shrink:0;font-weight:800;font-size:12px;color:${autoRun ? "var(--purple)" : "var(--dim)"}`}>${autoRun ? "ON" : "OFF"}</span>
+          </button>
+          ${!compact && html`<div class="dim" style="font-size:12px;margin-top:4px">${autoRun
+            ? "Each number is fetched and saved the moment you add it, one at a time, while you keep typing. Scroll down to mark books as rows land."
+            : "Numbers wait in the queue until you tap Fetch + save."}</div>`}
+          ${autoRun && !buyIds.length && html`<div style="font-size:12px;margin-top:6px;color:var(--yellow);font-weight:700">⚠︎ No buy linked — sets will save unlinked. Link one above before you start typing.</div>`}
+        </div>`}
         ${mode === "bulk" && html`<div style=${`border:1px solid ${books ? "var(--blue)" : "var(--line)"};border-radius:10px;padding:9px 10px;margin-bottom:10px`}>
           <button class="row" onClick=${() => setBooks(!books)} onPointerDown=${e => e.preventDefault()}
             style="width:100%;background:transparent;border:none;padding:0;color:var(--text);justify-content:space-between;text-align:left;gap:10px">
@@ -4076,14 +4154,14 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
             <span style=${`flex-shrink:0;font-weight:800;font-size:12px;color:${books ? "var(--blue)" : "var(--dim)"}`}>${books ? "ON" : "OFF"}</span>
           </button>
           ${books ? html`
-            <div class="dim" style="font-size:12px;margin-top:6px">Every number queued here saves with its instructions marked <b style="color:var(--blue)">Book ×1</b> — including numbers you already track, so a book you've just found gets recorded without opening the set. Never overwrites books already logged.</div>
+            ${!compact && html`<div class="dim" style="font-size:12px;margin-top:6px">Every number queued here saves with its instructions marked <b style="color:var(--blue)">Book ×1</b> — including numbers you already track, so a book you've just found gets recorded without opening the set. Never overwrites books already logged.</div>`}
             <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
               <span class="dim" style="font-size:12px">Condition:</span>
               ${CONDITIONS.map(([id, label]) => html`<${Chip} key=${id} label=${label} color=${condColor(id)}
                 active=${bookCond === id} onPointerDown=${e => e.preventDefault()} onClick=${() => setBookCond(id)} />`)}
             </div>
-            <div class="dim" style="font-size:11px;margin-top:7px">Multi-booklet sets are marked as one book — set the real count on the set's Instructions panel.</div>
-          ` : html`<div class="dim" style="font-size:12px;margin-top:4px">Turn on when you're reading numbers off a stack of booklets.</div>`}
+            ${!compact && html`<div class="dim" style="font-size:11px;margin-top:7px">Book 1 is assumed — use the 📖 chips on each row below to mark exactly which booklets you have.</div>`}
+          ` : !compact && html`<div class="dim" style="font-size:12px;margin-top:4px">Turn on when you're reading numbers off a stack of booklets.</div>`}
         </div>`}
         ${mode === "bulk" ? html`
           <div class="row" style="gap:8px">
@@ -4119,14 +4197,17 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
           <span class="label" style="margin:0">Queue · ${queue.length} set${queue.length === 1 ? "" : "s"}</span>
           <span class="row" style="gap:8px;flex-shrink:0">
             ${doneCount > 0 && !busy && html`<button class="chip" style="border-color:var(--line);color:var(--dim)"
-              onClick=${() => setQueue(q => q.filter(r => r.status === "pending" || r.status === "error"))}>Clear done</button>`}
+              onClick=${() => setQueue(q => q.filter(r => !["saved", "copied", "skipped"].includes(r.status)))}>Clear done</button>`}
             ${!busy && html`<button class="chip" style="border-color:var(--line);color:var(--dim)"
-              onClick=${() => { setQueue([]); setSavedMsg(""); setLastQueued(""); }}>Clear all</button>`}
+              onClick=${() => { setQueue(q => q.filter(r => r.status === "busy")); setSavedMsg(""); setLastQueued(""); }}>Clear all</button>`}
           </span>
         </div>
+        ${liveBits.length > 0 && html`<div style="font-size:12px;font-weight:700;color:var(--green);margin:-2px 0 8px">✓ ${liveBits.join(" · ")}</div>`}
         ${queue.map(r => {
           const isDup = r.status === "pending" && existing.includes(r.num);
-          return html`<div key=${r.num} class="row" style=${`gap:8px;background:var(--panel2);border:1px solid ${isDup ? "var(--yellow)" : "var(--line)"};border-radius:10px;padding:8px 10px;margin-bottom:6px`}>
+          const bi = ["saved", "copied", "skipped"].includes(r.status) ? bookInfo(r.num) : null;
+          return html`<div key=${r.num}>
+          <div class="row" style=${`gap:8px;background:var(--panel2);border:1px solid ${isDup ? "var(--yellow)" : "var(--line)"};border-radius:10px;padding:8px 10px;margin-bottom:6px`}>
             <span style=${`flex-shrink:0;width:16px;text-align:center;font-weight:700;color:${QUEUE_COLOR[r.status]}`}>${QUEUE_ICON[r.status]}</span>
             <div style="flex:1;min-width:0">
               <div class="mono ellip" style="font-weight:700;font-size:13px">${r.num}</div>
@@ -4137,16 +4218,43 @@ function AddSet({ buys, cats, addBuy, persistSet, existing, lastBuy, prefBuy, on
             </div>
             ${isDup && buyIds.length > 0 && html`<button class="chip" style=${`flex-shrink:0;border-color:${r.dupAction === "copy" ? "var(--green)" : "var(--line)"};color:${r.dupAction === "copy" ? "var(--green)" : "var(--dim)"}`}
               onClick=${() => queuePatch(r.num, { dupAction: r.dupAction === "copy" ? "skip" : "copy" })}>${r.dupAction === "copy" ? "＋ copy" : "skip"}</button>`}
-            ${!busy && html`<button class="ghost" style="width:auto;flex-shrink:0;padding:4px 9px;font-size:14px;color:var(--dim)"
+            ${/* auto-run processes a duplicate the instant it's typed, so the "actually, I have a
+                  second copy" decision has to stay available AFTER the row is skipped */ ""}
+            ${r.status === "skipped" && buyIds.length > 0 && html`<button class="chip" style="flex-shrink:0;border-color:var(--green);color:var(--green)"
+              onPointerDown=${e => e.preventDefault()}
+              onClick=${() => { const m = addCopyOf(r.num); if (m) queuePatch(r.num, { status: "copied", msg: `another copy → ${m}` }); }}>＋ copy</button>`}
+            ${r.status === "error" && html`<button class="chip" title="Retry" style="flex-shrink:0;border-color:var(--yellow);color:var(--yellow)"
+              onPointerDown=${e => e.preventDefault()}
+              onClick=${() => queuePatch(r.num, { status: "pending", msg: "" })}>↻ Retry</button>`}
+            ${r.status !== "busy" && html`<button class="ghost" style="width:auto;flex-shrink:0;padding:4px 9px;font-size:14px;color:var(--dim)"
+              onPointerDown=${e => e.preventDefault()}
               onClick=${() => queueDel(r.num)}>×</button>`}
+          </div>
+          ${/* v0.68: mark which booklets you actually have without leaving the add page. Grey = not
+                held, green = held. ＋ declares another book (the count can't be fetched). */ ""}
+          ${booksOn && bi && html`<div class="row" style="gap:5px;flex-wrap:wrap;margin:-2px 0 6px 26px">
+            ${Array.from({ length: bi.count }, (_, k) => k + 1).map(i => html`
+              <button key=${i} class="chip" style=${`padding:3px 9px;font-size:12px;border-color:${bi.have.has(i) ? "var(--green)" : "var(--line)"};color:${bi.have.has(i) ? "var(--green)" : "var(--dim)"};background:transparent`}
+                onPointerDown=${e => e.preventDefault()}
+                onClick=${() => toggleBooklet(r.num, i)}>📖${i}</button>`)}
+            <button class="chip" style="padding:3px 9px;font-size:12px;border-color:var(--line);color:var(--dim)"
+              onPointerDown=${e => e.preventDefault()} onClick=${() => addBookSlot(r.num)}>＋</button>
+          </div>`}
           </div>`;
         })}
         <div style="height:4px"></div>
-        <button class="btn" disabled=${busy || !pendingCount} onClick=${runQueue}>
+        ${autoRun ? html`
+          ${workingCount > 0
+            ? html`<div class="dim" style="text-align:center;font-size:13px;padding:8px">⏳ Processing… ${workingCount} to go — keep typing.</div>`
+            : errCount > 0
+              ? html`<button class="btn" onPointerDown=${e => e.preventDefault()}
+                  onClick=${() => setQueue(q => q.map(r => r.status === "error" ? { ...r, status: "pending", msg: "" } : r))}>↻ Retry ${errCount} failed</button>`
+              : html`<div class="dim" style="text-align:center;font-size:13px;padding:8px">✓ All caught up — keep typing.</div>`}
+        ` : html`<button class="btn" disabled=${busy || !pendingCount} onClick=${runQueue}>
           ${busy ? (progress ? `Fetching ${progress}…` : "Fetching…")
             : pendingCount ? `Fetch + save ${pendingCount} set${pendingCount === 1 ? "" : "s"}`
             : "All done — add more numbers"}
-        </button>
+        </button>`}
       </div>`}
     </div>`}
 
