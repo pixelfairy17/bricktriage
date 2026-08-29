@@ -96,8 +96,14 @@ const html = htm.bind(h);
 const Portal = ({ children }) => createPortal(children, document.body);
 
 // ---------- version / changelog (bump APP_VERSION + prepend CHANGELOG entry on EVERY change) ----------
-const APP_VERSION = "0.68.0";
+const APP_VERSION = "0.69.0";
 const CHANGELOG = [
+  ["0.69.0", "2026-08-29", [
+    "Sort by SET NUMBER. New \u201cSet #\u201d option in the sets list sort cycle (Newest \u2192 Completion \u2192 Value \u2192 Recent part \u2192 Set # \u2192 \u2026), and it flows into every view \u2014 flat, by buy, by theme, by condition \u2014 since they all order off the same list.",
+    "Also on a buy's own set list (\u2193 Newest \u2192 \u2193 Completion \u2192 \u2191 Set #) and in \uff0b Link existing set, where you're searching by number anyway.",
+    "Sorts numerically, not as text: 9999 comes before 10497, and 75281-1 before 75281-2. Odd ids (K8672-1) sort alphabetically after the numeric ones instead of being scattered through them.",
+    "Asc / Desc is now remembered PER sort \u2014 Set # starts at 1, 2, 3\u2026 while Newest stays newest-first, and changing one no longer flips the other. Your existing direction carries over.",
+  ]],
   ["0.68.0", "2026-08-29", [
     "\u21bb Bulk now processes as you type. \u2699\ufe0e Process as I add (on by default) fetches and saves each number the moment you add it \u2014 one at a time, in the background \u2014 while you keep typing the next. The list fills in down the page instead of waiting for one big run at the end; a live tally shows saved / skipped / failed as it goes.",
     "\ud83d\udcd6 Per-booklet chips on every processed row: \ud83d\udcd61 \ud83d\udcd62 \ud83d\udcd63 \u2014 grey for don't have, tap to go green for have, recorded straight onto the set. \uff0b adds another book. Rebrickable publishes nothing about instructions, so the book count can't be looked up \u2014 \uff0b is how you declare it.",
@@ -799,6 +805,19 @@ function completion(parts, includeSpares = countSpares()) {
 const foundCount = r => (r.parts || []).reduce((a, p) => a + (p.qtyFound || 0), 0)
   + (r.minifigs || []).reduce((a, f) => a + (f.parts || []).reduce((b, p) => b + (p.qtyFound || 0), 0), 0);
 const normSetNum = s => { const t = s.trim(); return t && !t.includes("-") ? `${t}-1` : t; };
+// v0.69: set numbers must sort NUMERICALLY on the base — a plain string sort puts 9999 after
+// 10497, which is exactly the order you don't want when hunting for a number in a long list.
+// Compares base as an integer, then the -N variant. Non-numeric ids (K8672-1, BIGBOX-1) sort
+// alphabetically after the numeric ones rather than being interleaved by ASCII.
+const cmpSetNum = (an, bn) => {
+  const key = n => { const [base = "", v = ""] = String(n || "").split("-");
+    return { n: /^\d+$/.test(base) ? parseInt(base, 10) : null, base, v: parseInt(v, 10) || 0 }; };
+  const a = key(an), b = key(bn);
+  if (a.n != null && b.n != null) return (a.n - b.n) || (a.v - b.v);
+  if (a.n != null) return -1;
+  if (b.n != null) return 1;
+  return a.base.localeCompare(b.base) || (a.v - b.v);
+};
 // "last bulk buy" = the BULK-kind buy most recently added to (newest set dateAdded among its links);
 // falls back to the newest-created bulk buy if none has sets yet. Regular buys never qualify.
 const lastBulkBuyOf = (buys, index) => {
@@ -3319,8 +3338,14 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
   const toggleFilter = id => setFilterM(filterM.includes(id) ? filterM.filter(x => x !== id) : [...filterM, id]);
   const toggleTheme = t => setThemeM(themeM.includes(t) ? themeM.filter(x => x !== t) : [...themeM, t]);
   const [sort, setSortRaw] = useState(() => load("bt:sv:sort", "date"));
-  const [sortDir, setSortDirRaw] = useState(() => load("bt:sv:sortdir", "desc")); // #8 asc | desc
-  const setSortDir = v => { setSortDirRaw(v); save("bt:sv:sortdir", v); };
+  // #8 asc | desc — remembered PER sort, so "Set #" can default to 1,2,3… while "Newest" stays
+  // newest-first. Seeded from the old single-value key so an existing preference carries over.
+  const [sortDirs, setSortDirsRaw] = useState(() => {
+    const legacy = load("bt:sv:sortdir", "desc");
+    return { date: legacy, pct: legacy, value: legacy, recentpart: legacy, setnum: "asc", ...load("bt:sv:sortdirs", {}) };
+  });
+  const sortDir = sortDirs[sort] || "desc";
+  const setSortDir = v => { const next = { ...sortDirs, [sort]: v }; setSortDirsRaw(next); save("bt:sv:sortdirs", next); };
   const [view, setViewRaw] = useState(() => load("bt:sv:view", "flat")); // flat | bybuy | bytheme
   const [density, setDensityRaw] = useState(() => load("bt:sv:density", "detailed")); // detailed | compact
   const setDensity = v => { setDensityRaw(v); save("bt:sv:density", v); };
@@ -3420,6 +3445,7 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
       sort === "pct" ? b.pct - a.pct :
       sort === "value" ? bestVal(b) - bestVal(a) :
       sort === "recentpart" ? (b.lastPartAt || b.dateAdded || 0) - (a.lastPartAt || a.dateAdded || 0) :
+      sort === "setnum" ? cmpSetNum(b.setNum, a.setNum) :
       b.dateAdded - a.dateAdded));
   }, [index, filterM, themeM, sort, sortDir, allTriage, condF, incompleteOnly, buildingOnly, tagM]);
 
@@ -3650,8 +3676,8 @@ function SetsList({ index, buys, cats, addBuy, persistSet, merch, upsertMerch, d
         onClick=${() => setIncompleteOnly(!incompleteOnly)} />
       <${Chip} key="c-building" label="🔨 Building" color="var(--yellow)" active=${buildingOnly}
         onClick=${() => setBuildingOnly(!buildingOnly)} />
-      <${Chip} key="c-sort" label=${(sort === "pct" ? "Completion" : sort === "value" ? "Value" : sort === "recentpart" ? "Recent part" : "Newest")} color="var(--blue)" active
-        onClick=${() => setSort(s => s === "date" ? "pct" : s === "pct" ? "value" : s === "value" ? "recentpart" : "date")} />
+      <${Chip} key="c-sort" label=${(sort === "pct" ? "Completion" : sort === "value" ? "Value" : sort === "recentpart" ? "Recent part" : sort === "setnum" ? "Set #" : "Newest")} color="var(--blue)" active
+        onClick=${() => setSort(s => s === "date" ? "pct" : s === "pct" ? "value" : s === "value" ? "recentpart" : s === "recentpart" ? "setnum" : "date")} />
       <${Chip} key="c-sortdir" label=${sortDir === "asc" ? "↑ Asc" : "↓ Desc"} color="var(--blue)" active=${false}
         onClick=${() => setSortDir(sortDir === "asc" ? "desc" : "asc")} />
       ${filtersActive && html`<${Chip} key="c-clear" label="✕ Clear" color="var(--red)" active=${false}
@@ -5992,7 +6018,9 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
   const delLoosePart = id => updateBuy({ ...openBuy, parts: (openBuy.parts || []).filter(x => x.id !== id) });
   if (openBuy) {
     const sets = [...setsOf(openBuy.id)].sort((a, b) =>
-      detailSort === "pct" ? b.pct - a.pct : b.dateAdded - a.dateAdded);
+      detailSort === "pct" ? b.pct - a.pct
+      : detailSort === "setnum" ? cmpSetNum(a.setNum, b.setNum)
+      : b.dateAdded - a.dateAdded);
     // v0.59: qty of a set within THIS buy (from the index's copy summaries)
     const qtyHere = e => ((e.copies || []).find(c => c.buyId === openBuy.id)?.qty) || 1;
     const copyTotal = sets.reduce((a, e) => a + qtyHere(e), 0);
@@ -6137,8 +6165,8 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
       </div>`}
       <div class="row" style="justify-content:space-between;margin:4px 2px 8px">
         <div class="label" style="margin:0">Sets from this buy · ${sets.length}${copyTotal > sets.length ? ` (${copyTotal} copies)` : ""}</div>
-        <${Chip} label=${detailSort === "pct" ? "↓ Completion" : "↓ Newest"} color="var(--blue)" active
-          onClick=${() => setDetailSort(v => v === "pct" ? "date" : "pct")} />
+        <${Chip} label=${detailSort === "pct" ? "↓ Completion" : detailSort === "setnum" ? "↑ Set #" : "↓ Newest"} color="var(--blue)" active
+          onClick=${() => setDetailSort(v => v === "pct" ? "setnum" : v === "setnum" ? "date" : "pct")} />
       </div>
       ${sets.length === 0 && html`<div class="card dim" style="text-align:center;padding:24px">
         No sets linked yet. Link from a set's detail screen or when adding a set.</div>`}
@@ -6199,7 +6227,8 @@ function Buys({ buys, index, cats, merch = [], onOpenMerch, upsertMerch, addBuy,
             onInput=${e => setLinkQ(e.target.value)} style="margin-bottom:10px" />`}
           ${linkPicker === "set" && (() => {
             const ql = linkQ.trim().toLowerCase();
-            const list = linkableSets.filter(e => !ql || (e.name || "").toLowerCase().includes(ql) || (e.setNum || "").toLowerCase().includes(ql));
+            const list = linkableSets.filter(e => !ql || (e.name || "").toLowerCase().includes(ql) || (e.setNum || "").toLowerCase().includes(ql))
+              .sort((a, b) => cmpSetNum(a.setNum, b.setNum));
             // never-linked sets first (the common “just catalogued” case), then everything else
             list.sort((a, b) => ((a.buyIds || []).length ? 1 : 0) - ((b.buyIds || []).length ? 1 : 0));
             return list.length === 0

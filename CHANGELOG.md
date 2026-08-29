@@ -9,6 +9,16 @@ Hosted on GitHub Pages (was Netlify Drop). Stack: Preact 10 + htm via esm.sh, no
 
 -----
 
+## v0.69.0 — 2026-08-29
+
+**Sort by set number.**
+
+- **Sets list:** new **Set #** step in the sort cycle (Newest → Completion → Value → Recent part → **Set #** → …). It flows into every view — flat, **by buy**, **by theme**, **by condition** — because they all order off the same filtered list.
+- **Buy detail:** the linked-sets chip gains it (↓ Newest → ↓ Completion → **↑ Set #**).
+- **＋ Link existing set:** now ordered by number, since that picker is where you're hunting for one. Never-linked sets still come first — the number order holds within each group.
+- **Numeric, not textual.** `9999` sorts before `10497` (a plain string sort gets that backwards, which is exactly wrong when scanning for a number), and `75281-1` before `75281-2`. Non-numeric ids like `K8672-1` sort alphabetically *after* the numeric ones rather than being interleaved by ASCII.
+- **Asc / Desc is now remembered per sort.** Set # starts ascending (1, 2, 3…) while Newest stays newest-first, and flipping one no longer flips the other. Your existing direction preference is carried over to the sorts that had it.
+
 ## v0.68.0 — 2026-08-29
 
 **↻ Bulk processes as you type, and books are marked from the queue.**
